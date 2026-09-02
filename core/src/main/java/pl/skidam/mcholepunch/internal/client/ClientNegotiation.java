@@ -12,6 +12,7 @@ import pl.skidam.mcholepunch.HolepunchOptions;
 import pl.skidam.mcholepunch.HolepunchRequest;
 import pl.skidam.mcholepunch.HolepunchRoute;
 import pl.skidam.mcholepunch.internal.DebugLog;
+import pl.skidam.mcholepunch.internal.Usernames;
 import pl.skidam.mcholepunch.internal.crypto.CipherStreamState;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
@@ -23,7 +24,7 @@ final class ClientNegotiation {
 
 	static Result negotiate(long debugId, SocketChannel channel, HolepunchRequest request, HolepunchRoute address) throws Exception {
 		HolepunchOptions options = request.options();
-		String username = HolepunchRequest.usernameOrDefault(options);
+		String username = Usernames.usernameOrDefault(options);
 		UUID marker = HolepunchMarker.random(0);
 		ByteBuffer handshake = LoginCodec.handshake(request.protocolVersion(), address.host() + options.handshakeHostSuffix(), address.port());
 		DebugLog.log("CLIENT", debugId, "send handshake %s", DebugLog.preview(handshake));

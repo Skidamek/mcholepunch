@@ -5,12 +5,19 @@ import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
+import pl.skidam.mcholepunch.internal.Usernames;
+
 public final class HolepunchOptions {
 	public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 	public static final Duration DEFAULT_NEGOTIATION_TIMEOUT = Duration.ofSeconds(10);
 	public static final Duration DEFAULT_HANDLER_SETUP_TIMEOUT = Duration.ofSeconds(5);
 	public static final long DEFAULT_MAX_PENDING_WRITE_BYTES = 4L * 1024 * 1024;
-	/** Forge 1.17+ / NeoForge ClientIntention hostname extra. `ConnectionType.forVersionFlag` treats a host that contains this as MODDED with FML protocol 3. */
+	/**
+	 * Forge 1.17+ / NeoForge ClientIntention hostname extra. `ConnectionType.forVersionFlag` treats
+	 * a host that contains this as MODDED with FML protocol 3. It lives here because appending it
+	 * to the configured host is how a client shapes its own handshake; the library itself never
+	 * inspects the value.
+	 */
 	public static final String FORGE_FML3_HANDSHAKE_HOST_SUFFIX = "\u0000FML3\u0000";
 
 	private final String username;
@@ -99,7 +106,7 @@ public final class HolepunchOptions {
 		}
 
 		public HolepunchOptions build() {
-			if (username != null && !HolepunchRequest.isValidUsername(username)) {
+			if (username != null && !Usernames.isValid(username)) {
 				throw new IllegalArgumentException("username must be a valid Minecraft username");
 			}
 			return new HolepunchOptions(this);

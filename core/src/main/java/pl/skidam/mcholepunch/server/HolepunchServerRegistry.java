@@ -11,7 +11,6 @@ import pl.skidam.mcholepunch.HolepunchOptions;
 import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
 
 public final class HolepunchServerRegistry {
-	public static final Duration DEFAULT_HANDLER_SETUP_TIMEOUT = Duration.ofSeconds(5);
 	private static final AtomicReference<Registration> REGISTRATION = new AtomicReference<>();
 
 	private HolepunchServerRegistry() {}
@@ -21,7 +20,7 @@ public final class HolepunchServerRegistry {
 	}
 
 	public static Registration register(Executor executor, long maximumPendingWriteBytes, ApplicationHandlerFactory factory) {
-		return register(executor, maximumPendingWriteBytes, DEFAULT_HANDLER_SETUP_TIMEOUT, factory);
+		return register(executor, maximumPendingWriteBytes, HolepunchOptions.DEFAULT_HANDLER_SETUP_TIMEOUT, factory);
 	}
 
 	public static Registration register(Executor executor, long maximumPendingWriteBytes, Duration handlerSetupTimeout, ApplicationHandlerFactory factory) {

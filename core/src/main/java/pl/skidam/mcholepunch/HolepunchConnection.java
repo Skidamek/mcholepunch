@@ -8,8 +8,9 @@ public interface HolepunchConnection extends AutoCloseable {
 	 * Queues the remaining bytes without changing the supplied buffer's position. The caller must not mutate or reuse the buffer until the returned stage completes.
 	 * <p>
 	 * Bytes submitted while {@link #isRaw()} is {@code false} are carried by the encrypted transport and delivered to the peer through {@link HolepunchHandler#onRead(ByteBuffer)}; bytes
-	 * submitted while it is {@code true} are carried by the raw stream and delivered through {@link HolepunchHandler#onRawRead(ByteBuffer)}. Applications that change their wire format at the
-	 * handoff boundary must therefore not submit bytes between requesting the upgrade and this connection switching to raw.
+	 * submitted while it is {@code true} are carried by the raw stream and delivered through {@link HolepunchHandler#onRawRead(ByteBuffer)}. Writes submitted between
+	 * {@link #prepareTransportUpgrade()} and the raw switch fail instead of being carried, so an application must hold its own output across the upgrade and submit it once
+	 * {@link #commitTransportUpgrade()} has completed.
 	 */
 	CompletionStage<Void> write(ByteBuffer data);
 

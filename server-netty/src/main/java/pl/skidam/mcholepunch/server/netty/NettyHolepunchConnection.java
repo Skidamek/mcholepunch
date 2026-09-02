@@ -3,7 +3,6 @@ package pl.skidam.mcholepunch.server.netty;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Deque;
-import java.util.Iterator;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
@@ -127,10 +126,14 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
 					return;
 				}
-				boolean blocked = handoff.blocksData();
+				if (handoff.blocksData()) {
+					pendingBytes.addAndGet(-size);
+					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport upgrade in progress", null));
+					return;
+				}
 				boolean rawEra = handoff.isRaw();
-				writes.addLast(new OutboundRequest(copy, size, result, blocked, rawEra, Kind.DATA));
-				DebugLog.log("SERVER", debugId, "write queued queueDepth=%d pending=%d blocked=%s rawEra=%s", writes.size(), pendingBytes.get(), blocked, rawEra);
+				writes.addLast(new OutboundRequest(copy, size, result, rawEra, Kind.DATA));
+				DebugLog.log("SERVER", debugId, "write queued queueDepth=%d pending=%d rawEra=%s", writes.size(), pendingBytes.get(), rawEra);
 				drainWrites();
 			});
 		} catch (Throwable throwable) {
@@ -252,7 +255,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		if (!channel.eventLoop().inEventLoop() || writing || closed.get()) {
 			return;
 		}
-		OutboundRequest request = nextWritableRequest();
+		OutboundRequest request = writes.pollFirst();
 		if (request == null) {
 			return;
 		}
@@ -297,20 +300,9 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		});
 	}
 
-	private OutboundRequest nextWritableRequest() {
-		for (Iterator<OutboundRequest> iterator = writes.iterator(); iterator.hasNext();) {
-			OutboundRequest request = iterator.next();
-			if (request.kind() != Kind.DATA || !request.blocked() || encryption == null || encryption.isRaw()) {
-				iterator.remove();
-				return request;
-			}
-		}
-		return null;
-	}
-
 	private void applyTransition(TransportHandoff.Transition transition) {
 		for (TransportFrame.Type type : transition.outbound()) {
-			writes.addLast(new OutboundRequest(null, 0, new CompletableFuture<>(), false, false, fromFrameType(type)));
+			writes.addLast(new OutboundRequest(null, 0, new CompletableFuture<>(), false, fromFrameType(type)));
 		}
 		if (transition.activatesRaw()) {
 			encryption.activateRaw();
@@ -549,7 +541,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		COMMIT
 	}
 
-	private record OutboundRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean blocked, boolean rawEra, Kind kind) {}
+	private record OutboundRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean rawEra, Kind kind) {}
 
 	private record PendingRead(ByteBuffer data, boolean rawEra) {}
 

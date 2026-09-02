@@ -175,11 +175,13 @@ final class NioHolepunchConnection implements HolepunchConnection {
 			if (closed.get()) {
 				pendingBytes.addAndGet(-size);
 				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+			} else if (handoff.blocksData()) {
+				pendingBytes.addAndGet(-size);
+				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport upgrade in progress", null));
 			} else {
-				boolean blocked = handoff.blocksData();
 				boolean rawEra = handoff.isRaw();
-				writes.add(new WriteRequest(copy, size, result, blocked, rawEra, Kind.DATA));
-				DebugLog.log("CLIENT", debugId, "write queued queueDepth=%d pending=%d blocked=%s rawEra=%s", writes.size(), pendingBytes.get(), blocked, rawEra);
+				writes.add(new WriteRequest(copy, size, result, rawEra, Kind.DATA));
+				DebugLog.log("CLIENT", debugId, "write queued queueDepth=%d pending=%d rawEra=%s", writes.size(), pendingBytes.get(), rawEra);
 				writes.notifyAll();
 			}
 		}
@@ -305,17 +307,10 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private WriteRequest takeWrite() throws InterruptedException {
 		synchronized (writes) {
-			while (!closed.get()) {
-				for (Iterator<WriteRequest> iterator = writes.iterator(); iterator.hasNext();) {
-					WriteRequest write = iterator.next();
-					if (write.kind() != Kind.DATA || !write.blocked() || encryption.isRaw()) {
-						iterator.remove();
-						return write;
-					}
-				}
+			while (!closed.get() && writes.isEmpty()) {
 				writes.wait();
 			}
-			return null;
+			return closed.get() ? null : writes.poll();
 		}
 	}
 
@@ -468,7 +463,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private void applyTransition(TransportHandoff.Transition transition) {
 		for (TransportFrame.Type type : transition.outbound()) {
-			writes.add(new WriteRequest(null, 0, new CompletableFuture<>(), false, false, fromFrameType(type)));
+			writes.add(new WriteRequest(null, 0, new CompletableFuture<>(), false, fromFrameType(type)));
 		}
 		if (!transition.outbound().isEmpty()) {
 			writes.notifyAll();
@@ -582,5 +577,5 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		COMMIT
 	}
 
-	private record WriteRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean blocked, boolean rawEra, Kind kind) {}
+	private record WriteRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean rawEra, Kind kind) {}
 }

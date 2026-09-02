@@ -1,13 +1,17 @@
 package pl.skidam.mcholepunch.server.netty;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
 
@@ -16,6 +20,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 
 import pl.skidam.mcholepunch.HolepunchConnection;
 import pl.skidam.mcholepunch.HolepunchHandler;
+import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 
 class NettyHolepunchConnectionTest {
 	@Test
@@ -89,6 +94,22 @@ class NettyHolepunchConnectionTest {
 		callbacks.runNewest();
 
 		assertEquals(List.of(1, 2), reads);
+		channel.finishAndReleaseAll();
+	}
+
+	@Test
+	void rejectsWritesWhileTransportUpgradeIsInProgress() throws Exception {
+		EmbeddedChannel channel = new EmbeddedChannel();
+		NettyEncryption encryption = new NettyEncryption(MinecraftCrypt.newSecret());
+		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, Runnable::run, new HolepunchHandler() {
+		}, 1024, encryption);
+
+		connection.prepareTransportUpgrade();
+		channel.runPendingTasks();
+		CompletionStage<Void> write = connection.write(ByteBuffer.wrap(new byte[]{1}));
+		channel.runPendingTasks();
+
+		assertThrows(ExecutionException.class, () -> write.toCompletableFuture().get(1, TimeUnit.SECONDS));
 		channel.finishAndReleaseAll();
 	}
 

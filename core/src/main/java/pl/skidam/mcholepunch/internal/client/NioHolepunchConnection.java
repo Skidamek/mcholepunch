@@ -362,27 +362,28 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	}
 
 	private void processTransportPlaintext(ByteBuffer plaintext) throws IOException {
+		CompletionStage<Void> delivered = null;
 		List<TransportFrame> frames = transportReader.feed(plaintext);
 		for (TransportFrame frame : frames) {
 			switch (frame.type()) {
-				case DATA -> handleData(frame.payload());
+				case DATA -> delivered = handleData(frame.payload());
 				case READY, ACK, COMMIT -> receiveControl(frame.type());
 			}
 		}
+		if (delivered != null) {
+			awaitRead(delivered);
+		}
 	}
 
-	private void handleData(byte[] bytes) {
-		if (bytes.length == 0) {
-			return;
-		}
+	private CompletionStage<Void> handleData(byte[] bytes) {
 		long total = receivedBytes.addAndGet(bytes.length);
 		if (!takeoverComplete) {
 			initialData.writeBytes(bytes);
 			DebugLog.log("CLIENT", debugId, "buffering initial application bytes=%d totalReceived=%d", bytes.length, total);
-			return;
+			return null;
 		}
 		DebugLog.log("CLIENT", debugId, "received application bytes=%d totalReceived=%d %s", bytes.length, total, DebugLog.preview(bytes));
-		dispatchRead(ByteBuffer.wrap(bytes));
+		return dispatchRead(ByteBuffer.wrap(bytes));
 	}
 
 	private CompletionStage<Void> dispatchRead(ByteBuffer data) {
@@ -540,7 +541,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		}
 		writerExecutor.shutdownNow();
 		readerExecutor.shutdownNow();
-		request.options().callbackExecutor().execute(() -> handler.onClosed(failure));
+		callbackExecutor.execute(() -> handler.onClosed(failure));
 	}
 
 	private String debugState() {

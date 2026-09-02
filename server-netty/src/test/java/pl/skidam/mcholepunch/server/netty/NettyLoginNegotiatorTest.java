@@ -125,7 +125,7 @@ class NettyLoginNegotiatorTest {
 	}
 
 	private static NettyTakeoverSpec takeoverSpec() {
-		return NettyTakeoverSpec.builder().encryptionAnchors("splitter", "prepender").removalNames(List.of("timeout", "splitter", "flow_control", "decoder", "prepender", "encoder", "hackfix", "packet_handler")).build();
+		return new NettyTakeoverSpec("splitter", "prepender", List.of("timeout", "splitter", "flow_control", "decoder", "prepender", "encoder", "hackfix", "packet_handler"));
 	}
 
 	private static KeyPair keyPair() throws Exception {

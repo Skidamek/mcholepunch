@@ -44,7 +44,7 @@ class NettyTakeoverTest {
 				received.set(bytes);
 			}
 		}, 1024, null);
-		NettyTakeoverSpec spec = NettyTakeoverSpec.builder().encryptionAnchors("splitter", "prepender").removalNames(List.of("splitter", "decoder", "prepender", "encoder", "packet_handler")).build();
+		NettyTakeoverSpec spec = new NettyTakeoverSpec("splitter", "prepender", List.of("splitter", "decoder", "prepender", "encoder", "packet_handler"));
 
 		byte[] applicationBytes = {1, 2, 3, 4};
 		channel.writeInbound(Unpooled.wrappedBuffer(applicationBytes));
@@ -126,7 +126,7 @@ class NettyTakeoverTest {
 	}
 
 	private static NettyTakeoverSpec takeoverSpec() {
-		return NettyTakeoverSpec.builder().encryptionAnchors("splitter", "prepender").removalNames(List.of("splitter", "decoder", "prepender", "encoder", "packet_handler")).build();
+		return new NettyTakeoverSpec("splitter", "prepender", List.of("splitter", "decoder", "prepender", "encoder", "packet_handler"));
 	}
 
 	private static NettyHolepunchConnection connection(EmbeddedChannel channel, AtomicReference<Boolean> opened) {

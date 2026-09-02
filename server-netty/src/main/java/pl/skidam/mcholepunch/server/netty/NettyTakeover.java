@@ -90,7 +90,7 @@ public final class NettyTakeover {
 	}
 
 	private static void removeIfPresent(ChannelPipeline pipeline, NettyTakeoverSpec spec, String name) {
-		if (!name.equals(spec.cipherDecoderName()) && !name.equals(spec.cipherEncoderName()) && !name.equals(spec.rawInboundName()) && !name.equals(spec.rawOutboundName()) && pipeline.get(name) != null) {
+		if (!spec.owns(name) && pipeline.get(name) != null) {
 			pipeline.remove(name);
 		}
 	}

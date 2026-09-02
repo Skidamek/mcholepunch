@@ -1,117 +1,44 @@
 package pl.skidam.mcholepunch.server.netty;
 
 import java.util.List;
-import java.util.Objects;
 
-public final class NettyTakeoverSpec {
-	private final String inboundEncryptionAnchor;
-	private final String outboundEncryptionAnchor;
-	private final String rawInboundName;
-	private final String rawOutboundName;
-	private final String cipherDecoderName;
-	private final String cipherEncoderName;
-	private final String negotiatorName;
-	private final List<String> removalNames;
-
-	private NettyTakeoverSpec(Builder builder) {
-		inboundEncryptionAnchor = builder.inboundEncryptionAnchor;
-		outboundEncryptionAnchor = builder.outboundEncryptionAnchor;
-		rawInboundName = builder.rawInboundName;
-		rawOutboundName = builder.rawOutboundName;
-		cipherDecoderName = builder.cipherDecoderName;
-		cipherEncoderName = builder.cipherEncoderName;
-		negotiatorName = builder.negotiatorName;
-		removalNames = List.copyOf(builder.removalNames);
-	}
-
-	public static Builder builder() {
-		return new Builder();
+/**
+ * Names the Netty pipeline handlers around a holepunch takeover: where the vanilla cipher handlers
+ * anchor, what names the takeover installs under, and which vanilla handlers to strip once it
+ * lands. Minecraft pipelines only need {@link #minecraftLogin()}; the long constructor exists for
+ * embedding into a differently shaped pipeline.
+ */
+public record NettyTakeoverSpec(String inboundEncryptionAnchor, String outboundEncryptionAnchor, List<String> removalNames) {
+	public NettyTakeoverSpec {
+		removalNames = List.copyOf(removalNames);
 	}
 
 	public static NettyTakeoverSpec minecraftLogin() {
-		return builder().encryptionAnchors("splitter", "prepender").removalNames(List.of("timeout", "splitter", "flow_control", "decoder", "prepender", "encoder", "hackfix", "packet_handler", "unbundler", "bundler"))
-				.build();
-	}
-
-	public String inboundEncryptionAnchor() {
-		return inboundEncryptionAnchor;
-	}
-
-	public String outboundEncryptionAnchor() {
-		return outboundEncryptionAnchor;
+		return new NettyTakeoverSpec("splitter", "prepender", List.of("timeout", "splitter", "flow_control", "decoder", "prepender", "encoder", "hackfix", "packet_handler", "unbundler", "bundler"));
 	}
 
 	public String rawInboundName() {
-		return rawInboundName;
+		return "mcholepunch-raw-inbound";
 	}
 
 	public String rawOutboundName() {
-		return rawOutboundName;
+		return "mcholepunch-raw-outbound";
 	}
 
 	public String cipherDecoderName() {
-		return cipherDecoderName;
+		return "mcholepunch-cipher-decoder";
 	}
 
 	public String cipherEncoderName() {
-		return cipherEncoderName;
+		return "mcholepunch-cipher-encoder";
 	}
 
 	public String negotiatorName() {
-		return negotiatorName;
+		return "mcholepunch-login-negotiator";
 	}
 
-	public List<String> removalNames() {
-		return removalNames;
-	}
-
-	public static final class Builder {
-		private String inboundEncryptionAnchor;
-		private String outboundEncryptionAnchor;
-		private String rawInboundName = "mcholepunch-raw-inbound";
-		private String rawOutboundName = "mcholepunch-raw-outbound";
-		private String cipherDecoderName = "mcholepunch-cipher-decoder";
-		private String cipherEncoderName = "mcholepunch-cipher-encoder";
-		private String negotiatorName = "mcholepunch-login-negotiator";
-		private List<String> removalNames = List.of();
-
-		public Builder encryptionAnchors(String inbound, String outbound) {
-			inboundEncryptionAnchor = Objects.requireNonNull(inbound, "inbound");
-			outboundEncryptionAnchor = Objects.requireNonNull(outbound, "outbound");
-			return this;
-		}
-
-		public Builder rawInboundName(String value) {
-			rawInboundName = Objects.requireNonNull(value, "rawInboundName");
-			return this;
-		}
-
-		public Builder rawOutboundName(String value) {
-			rawOutboundName = Objects.requireNonNull(value, "rawOutboundName");
-			return this;
-		}
-
-		public Builder cipherNames(String decoder, String encoder) {
-			cipherDecoderName = Objects.requireNonNull(decoder, "decoder");
-			cipherEncoderName = Objects.requireNonNull(encoder, "encoder");
-			return this;
-		}
-
-		public Builder negotiatorName(String value) {
-			negotiatorName = Objects.requireNonNull(value, "negotiatorName");
-			return this;
-		}
-
-		public Builder removalNames(List<String> values) {
-			removalNames = List.copyOf(values);
-			return this;
-		}
-
-		public NettyTakeoverSpec build() {
-			if (inboundEncryptionAnchor == null || outboundEncryptionAnchor == null) {
-				throw new IllegalStateException("encryption anchors are required");
-			}
-			return new NettyTakeoverSpec(this);
-		}
+	/** Whether the takeover installs under this name, so the strip pass never removes its own handlers. */
+	public boolean owns(String handlerName) {
+		return rawInboundName().equals(handlerName) || rawOutboundName().equals(handlerName) || cipherDecoderName().equals(handlerName) || cipherEncoderName().equals(handlerName);
 	}
 }

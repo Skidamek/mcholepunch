@@ -7,10 +7,9 @@ import java.util.List;
 
 public final class TransportFrameReader {
 	private final int maximumFrameLength;
+	private final VarInts.Reader lengthReader = new VarInts.Reader();
 	private Stage stage = Stage.TYPE;
 	private TransportFrame.Type type;
-	private int length;
-	private int lengthBytes;
 	private byte[] payload;
 	private int payloadOffset;
 
@@ -34,10 +33,11 @@ public final class TransportFrameReader {
 			switch (stage) {
 				case TYPE -> readType(input.get() & 0xff);
 				case LENGTH -> {
-					int next = input.get() & 0xff;
-					TransportFrame frame = readLengthByte(next);
-					if (frame != null) {
-						frames.add(frame);
+					if (lengthReader.offer(input.get() & 0xff)) {
+						TransportFrame frame = frameForLength(lengthReader.value());
+						if (frame != null) {
+							frames.add(frame);
+						}
 					}
 				}
 				case PAYLOAD -> {
@@ -62,30 +62,15 @@ public final class TransportFrameReader {
 			case 3 -> TransportFrame.Type.COMMIT;
 			default -> throw new IOException("unknown mcholepunch transport frame type: " + value);
 		};
-		length = 0;
-		lengthBytes = 0;
+		lengthReader.reset();
 		stage = Stage.LENGTH;
 	}
 
-	private TransportFrame readLengthByte(int next) throws IOException {
-		if (lengthBytes == 4 && (next & 0xf0) != 0) {
-			throw new IOException("transport frame length VarInt exceeds 32 bits");
-		}
-		length |= (next & 0x7f) << lengthBytes * 7;
-		lengthBytes++;
-		if ((next & 0x80) != 0) {
-			if (lengthBytes == 5) {
-				throw new IOException("transport frame length VarInt exceeds five bytes");
-			}
-			return null;
-		}
-		if (VarInts.encodedLength(length) != lengthBytes) {
-			throw new IOException("non-canonical transport frame length VarInt");
-		}
+	private TransportFrame frameForLength(int length) throws IOException {
 		if (length < 0 || length > maximumFrameLength) {
 			throw new IOException("transport frame is too large: " + length);
 		}
-		if ((type == TransportFrame.Type.READY || type == TransportFrame.Type.ACK || type == TransportFrame.Type.COMMIT) && length != 0) {
+		if (type != TransportFrame.Type.DATA && length != 0) {
 			throw new IOException("transport control frame must not have a payload");
 		}
 		if (length == 0) {
@@ -94,19 +79,16 @@ public final class TransportFrameReader {
 			TransportFrame frame = new TransportFrame(type, payload);
 			reset();
 			return frame;
-		} else {
-			payload = new byte[length];
-			payloadOffset = 0;
-			stage = Stage.PAYLOAD;
 		}
+		payload = new byte[length];
+		payloadOffset = 0;
+		stage = Stage.PAYLOAD;
 		return null;
 	}
 
 	private void reset() {
 		stage = Stage.TYPE;
 		type = null;
-		length = 0;
-		lengthBytes = 0;
 		payload = null;
 		payloadOffset = 0;
 	}

@@ -38,6 +38,17 @@ class TransportFrameReaderTest {
 		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, 0})));
 	}
 
+	@Test
+	void rejectsFramesBeyondTheMaximumLength() {
+		assertThrows(IOException.class, () -> new TransportFrameReader(4).feed(ByteBuffer.wrap(new byte[]{0, 5, 1, 2, 3, 4, 5})));
+	}
+
+	@Test
+	void rejectsMalformedLengthVarInts() {
+		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0x10})));
+		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0})));
+	}
+
 	private static byte[] concat(ByteBuffer... buffers) {
 		int size = 0;
 		for (ByteBuffer buffer : buffers) size += buffer.remaining();

@@ -139,7 +139,7 @@ public final class LoginCodec {
 		if (!TakeoverQuery.IDENTIFIER.equals(identifier) || payload.length != 0) {
 			throw new IOException("unexpected Custom Query");
 		}
-		return new TakeoverQuery(transactionId, identifier, payload);
+		return new TakeoverQuery(transactionId, identifier);
 	}
 
 	public static ByteBuffer takeoverQueryPacket(int transactionId) throws IOException {
@@ -148,13 +148,6 @@ public final class LoginCodec {
 		VarInts.write(packet, transactionId);
 		writeString(packet, TakeoverQuery.IDENTIFIER);
 		return ByteBuffer.wrap(packet.toByteArray());
-	}
-
-	public static ByteBuffer takeoverQuery(int transactionId) throws IOException {
-		ByteBuffer packet = takeoverQueryPacket(transactionId);
-		byte[] bytes = new byte[packet.remaining()];
-		packet.get(bytes);
-		return MinecraftFrameWriter.frame(bytes);
 	}
 
 	public static String readString(ByteBuffer input) throws IOException {

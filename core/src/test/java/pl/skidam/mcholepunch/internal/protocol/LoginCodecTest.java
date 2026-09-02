@@ -151,7 +151,6 @@ class LoginCodecTest {
 		TakeoverQuery query = LoginCodec.readTakeoverQuery(packet);
 		assertEquals(42, query.transactionId());
 		assertEquals(TakeoverQuery.IDENTIFIER, query.identifier());
-		assertEquals(0, query.payload().length);
 	}
 
 	private static ByteBuffer unframedLoginStart(String username, boolean presenceByte, UUID profileId) throws IOException {

@@ -56,10 +56,6 @@ public final class MinecraftFrameReader {
 		return ByteBuffer.wrap(bytes).asReadOnlyBuffer();
 	}
 
-	public int pendingBytes() {
-		return pending.size();
-	}
-
 	private static int[] readVarInt(byte[] bytes, int offset) throws IOException {
 		int value = 0;
 		for (int index = 0; index < 5; index++) {

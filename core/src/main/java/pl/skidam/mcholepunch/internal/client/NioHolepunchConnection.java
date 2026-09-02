@@ -69,7 +69,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		this.handler = request.handler();
 		this.request = request;
 		this.callbackExecutor = new SerialExecutor(request.options().callbackExecutor());
-		this.encryption = TransportEncryption.client(result.secret(), result.decryptor(), MinecraftCrypt.encryptor(result.secret()));
+		this.encryption = new TransportEncryption(result.decryptor(), MinecraftCrypt.encryptor(result.secret()));
 		this.frameReader = result.frameReader();
 		this.transportReader = new TransportFrameReader(maximumFrameLength(request.options().maxPendingWriteBytes()));
 		this.writerExecutor = Executors.newSingleThreadExecutor(runnable -> daemon(runnable, "mcholepunch-writer"));

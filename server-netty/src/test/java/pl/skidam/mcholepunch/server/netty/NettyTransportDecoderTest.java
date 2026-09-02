@@ -14,6 +14,7 @@ import io.netty.channel.embedded.EmbeddedChannel;
 
 import pl.skidam.mcholepunch.HolepunchHandler;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
+import pl.skidam.mcholepunch.internal.crypto.TransportEncryption;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrameCodec;
 
 class NettyTransportDecoderTest {
@@ -21,7 +22,7 @@ class NettyTransportDecoderTest {
 	void acknowledgesReadyBeforeSwitchingToRawPipe() throws Exception {
 		byte[] secret = MinecraftCrypt.newSecret();
 		NettyEncryption serverEncryption = new NettyEncryption(secret);
-		NettyEncryption clientEncryption = new NettyEncryption(secret);
+		TransportEncryption clientEncryption = TransportEncryption.server(secret);
 		AtomicReference<byte[]> received = new AtomicReference<>();
 		EmbeddedChannel channel = new EmbeddedChannel();
 		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, Runnable::run, new HolepunchHandler() {

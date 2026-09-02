@@ -5,25 +5,13 @@ import java.security.GeneralSecurityException;
 
 import io.netty.buffer.ByteBuf;
 
-import pl.skidam.mcholepunch.internal.crypto.CipherStreamState;
-import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 import pl.skidam.mcholepunch.internal.crypto.TransportEncryption;
 
 public final class NettyEncryption {
 	private final TransportEncryption encryption;
 
 	public NettyEncryption(byte[] secret) throws GeneralSecurityException {
-		CipherStreamState decryptor = MinecraftCrypt.decryptor(secret);
-		CipherStreamState encryptor = MinecraftCrypt.encryptor(secret);
-		encryption = new TransportEncryption(secret, decryptor, encryptor);
-	}
-
-	public byte[] decrypt(byte[] bytes) {
-		return encryption.decrypt(bytes);
-	}
-
-	public byte[] encrypt(byte[] bytes) {
-		return encryption.encrypt(bytes);
+		encryption = TransportEncryption.server(secret);
 	}
 
 	public void decrypt(ByteBuf input, ByteBuf output) {

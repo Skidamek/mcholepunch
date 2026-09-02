@@ -9,6 +9,7 @@ import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.embedded.EmbeddedChannel;
 
+import pl.skidam.mcholepunch.internal.crypto.CipherStreamState;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 
 class NettyEncryptionTest {
@@ -16,14 +17,14 @@ class NettyEncryptionTest {
 	void encryptionIsContinuousAcrossWrites() throws Exception {
 		byte[] secret = MinecraftCrypt.newSecret();
 		NettyEncryption server = new NettyEncryption(secret);
-		NettyEncryption client = new NettyEncryption(secret);
 		EmbeddedChannel channel = new EmbeddedChannel(new NettyCipherEncoder(server));
 		channel.writeOutbound(Unpooled.wrappedBuffer(new byte[]{1, 2, 3}));
 		channel.writeOutbound(Unpooled.wrappedBuffer(new byte[]{4, 5}));
 		byte[] first = readBytes(channel.readOutbound());
 		byte[] second = readBytes(channel.readOutbound());
-		assertArrayEquals(new byte[]{1, 2, 3}, client.decrypt(first));
-		assertArrayEquals(new byte[]{4, 5}, client.decrypt(second));
+		CipherStreamState decryptor = MinecraftCrypt.decryptor(secret);
+		assertArrayEquals(new byte[]{1, 2, 3}, decryptor.update(first));
+		assertArrayEquals(new byte[]{4, 5}, decryptor.update(second));
 		channel.finishAndReleaseAll();
 	}
 
@@ -38,9 +39,9 @@ class NettyEncryptionTest {
 		composite.addComponents(true, Unpooled.wrappedBuffer(new byte[]{4}), Unpooled.wrappedBuffer(new byte[]{5, 6}));
 		encoder.writeOutbound(composite);
 		byte[] second = readBytes(encoder.readOutbound());
-		NettyEncryption decryptor = new NettyEncryption(secret);
-		assertArrayEquals(new byte[]{1, 2, 3}, decryptor.decrypt(first));
-		assertArrayEquals(new byte[]{4, 5, 6}, decryptor.decrypt(second));
+		CipherStreamState decryptor = MinecraftCrypt.decryptor(secret);
+		assertArrayEquals(new byte[]{1, 2, 3}, decryptor.update(first));
+		assertArrayEquals(new byte[]{4, 5, 6}, decryptor.update(second));
 		EmbeddedChannel decoder = new EmbeddedChannel(new NettyCipherDecoder(new NettyEncryption(secret)));
 		decoder.writeInbound(Unpooled.wrappedBuffer(first, second));
 		assertArrayEquals(new byte[]{1, 2, 3, 4, 5, 6}, readBytes(decoder.readInbound()));

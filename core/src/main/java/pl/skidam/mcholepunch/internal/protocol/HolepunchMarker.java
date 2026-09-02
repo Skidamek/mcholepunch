@@ -88,10 +88,6 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 		return create(flags, nonce);
 	}
 
-	public static byte[] fixedMarker() {
-		return FIXED_MARKER.clone();
-	}
-
 	private static boolean payloadBit(HolepunchMarker marker, byte[] mask, int index) {
 		boolean value;
 		if (index < 80) {

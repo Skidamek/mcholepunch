@@ -4,39 +4,33 @@ import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicReference;
 
 public final class TransportEncryption {
-	private final AtomicReference<CipherStreamState> decryptor;
-	private final AtomicReference<CipherStreamState> encryptor;
+	private final CipherStreamState decryptor;
+	private final CipherStreamState encryptor;
 	private final AtomicBoolean raw = new AtomicBoolean();
 
-	public TransportEncryption(byte[] secret, CipherStreamState initialDecryptor, CipherStreamState initialEncryptor) throws GeneralSecurityException {
-		Objects.requireNonNull(secret, "secret");
-		this.decryptor = new AtomicReference<>(Objects.requireNonNull(initialDecryptor, "initialDecryptor"));
-		this.encryptor = new AtomicReference<>(Objects.requireNonNull(initialEncryptor, "initialEncryptor"));
-	}
-
-	public static TransportEncryption client(byte[] secret, CipherStreamState initialDecryptor, CipherStreamState initialEncryptor) throws GeneralSecurityException {
-		return new TransportEncryption(secret, initialDecryptor, initialEncryptor);
+	public TransportEncryption(CipherStreamState initialDecryptor, CipherStreamState initialEncryptor) {
+		this.decryptor = Objects.requireNonNull(initialDecryptor, "initialDecryptor");
+		this.encryptor = Objects.requireNonNull(initialEncryptor, "initialEncryptor");
 	}
 
 	public static TransportEncryption server(byte[] secret) throws GeneralSecurityException {
-		return new TransportEncryption(secret, MinecraftCrypt.decryptor(secret), MinecraftCrypt.encryptor(secret));
+		return new TransportEncryption(MinecraftCrypt.decryptor(secret), MinecraftCrypt.encryptor(secret));
 	}
 
 	public byte[] decrypt(byte[] input) {
 		if (raw.get()) {
 			return input.clone();
 		}
-		return decryptor.get().update(input);
+		return decryptor.update(input);
 	}
 
 	public byte[] encrypt(byte[] input) {
 		if (raw.get()) {
 			return input.clone();
 		}
-		return encryptor.get().update(input);
+		return encryptor.update(input);
 	}
 
 	public int decrypt(ByteBuffer input, ByteBuffer output) {
@@ -45,7 +39,7 @@ public final class TransportEncryption {
 			output.put(input);
 			return bytes;
 		}
-		return decryptor.get().update(input, output);
+		return decryptor.update(input, output);
 	}
 
 	public int encrypt(ByteBuffer input, ByteBuffer output) {
@@ -54,7 +48,7 @@ public final class TransportEncryption {
 			output.put(input);
 			return bytes;
 		}
-		return encryptor.get().update(input, output);
+		return encryptor.update(input, output);
 	}
 
 	public boolean isRaw() {

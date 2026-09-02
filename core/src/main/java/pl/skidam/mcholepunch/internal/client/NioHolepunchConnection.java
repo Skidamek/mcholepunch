@@ -2,6 +2,7 @@ package pl.skidam.mcholepunch.internal.client;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.security.GeneralSecurityException;
@@ -15,6 +16,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -83,7 +85,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		NioHolepunchConnection connection = new NioHolepunchConnection(debugId, channel, request, result);
 		DebugLog.log("CLIENT", debugId, "waiting for takeover query");
 		connection.awaitTakeover(result.deadline());
-		channel.configureBlocking(true);
+		channel.socket().setSoTimeout(0);
 		DebugLog.log("CLIENT", debugId, "takeover complete; switching to coordinated transport initialBytes=%d", connection.initialDataSnapshot.length);
 		connection.dispatchOpen();
 		connection.dispatchInitialData();
@@ -94,15 +96,17 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private void awaitTakeover(long deadline) throws Exception {
 		ByteBuffer network = ByteBuffer.allocate(8192);
+		channel.socket().setSoTimeout(remainingMillis(deadline));
 		while (System.nanoTime() < deadline) {
 			network.clear();
-			int count = channel.read(network);
+			int count;
+			try {
+				count = channel.read(network);
+			} catch (SocketTimeoutException exception) {
+				break;
+			}
 			if (count < 0) {
 				throw new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "server closed during takeover", null);
-			}
-			if (count == 0) {
-				Thread.sleep(1);
-				continue;
 			}
 			network.flip();
 			DebugLog.log("CLIENT", debugId, "takeover TCP read encryptedBytes=%d", count);
@@ -124,6 +128,10 @@ final class NioHolepunchConnection implements HolepunchConnection {
 			}
 		}
 		throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, "takeover timed out", null);
+	}
+
+	private static int remainingMillis(long deadline) {
+		return Math.toIntExact(Math.min(Integer.MAX_VALUE, TimeUnit.NANOSECONDS.toMillis(Math.max(1, deadline - System.nanoTime()))));
 	}
 
 	private void dispatchOpen() {

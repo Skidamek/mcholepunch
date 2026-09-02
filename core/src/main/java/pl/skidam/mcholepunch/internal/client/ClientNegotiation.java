@@ -1,6 +1,7 @@
 package pl.skidam.mcholepunch.internal.client;
 
 import java.io.IOException;
+import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.security.PublicKey;
@@ -31,19 +32,21 @@ final class ClientNegotiation {
 		DebugLog.log("CLIENT", debugId, "send login start username=%s marker=%s %s", username, marker, DebugLog.preview(loginStart));
 		writeFully(channel, loginStart);
 
-		MinecraftFrameReader reader = new MinecraftFrameReader(2 * 1024 * 1024);
+		MinecraftFrameReader reader = new MinecraftFrameReader(LoginCodec.MAX_FRAME_BYTES);
 		CipherStreamState decryptor = null;
 		ByteBuffer network = ByteBuffer.allocate(8192);
 		long deadline = System.nanoTime() + options.negotiationTimeout().toNanos();
+		channel.socket().setSoTimeout(Math.toIntExact(options.negotiationTimeout().toMillis()));
 		while (System.nanoTime() < deadline) {
 			network.clear();
-			int count = channel.read(network);
+			int count;
+			try {
+				count = channel.read(network);
+			} catch (SocketTimeoutException exception) {
+				throw failure(HolepunchFailure.Kind.TIMEOUT, "negotiation timed out", exception);
+			}
 			if (count < 0) {
 				throw failure(HolepunchFailure.Kind.CLOSED, "server closed during negotiation", null);
-			}
-			if (count == 0) {
-				Thread.sleep(1);
-				continue;
 			}
 			network.flip();
 			DebugLog.log("CLIENT", debugId, "negotiation TCP read bytes=%d encrypted=%s", count, decryptor != null);
@@ -87,14 +90,7 @@ final class ClientNegotiation {
 
 	static void writeFully(SocketChannel channel, ByteBuffer data) throws IOException {
 		while (data.hasRemaining()) {
-			if (channel.write(data) == 0) {
-				try {
-					Thread.sleep(1);
-				} catch (InterruptedException exception) {
-					Thread.currentThread().interrupt();
-					throw new IOException("write interrupted", exception);
-				}
-			}
+			channel.write(data);
 		}
 	}
 

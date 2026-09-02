@@ -8,7 +8,7 @@ import java.util.UUID;
 
 public final class LoginCodec {
 	private static final int MAX_STRING_BYTES = 32767;
-	private static final int MAX_FRAME_BYTES = 2 * 1024 * 1024;
+	public static final int MAX_FRAME_BYTES = 2 * 1024 * 1024;
 	private static final int MAX_RSA_BLOCK_BYTES = 512;
 	private static final int MAX_HOSTNAME_BYTES = 255;
 	// Login-phase packet ids are shared by every Minecraft version we speak.

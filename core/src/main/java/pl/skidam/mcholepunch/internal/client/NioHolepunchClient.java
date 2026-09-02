@@ -60,7 +60,6 @@ public final class NioHolepunchClient {
 				channel.socket().setKeepAlive(true);
 				channel.socket().connect(route.socketAddress(), Math.toIntExact(request.options().connectTimeout().toMillis()));
 				DebugLog.log("CLIENT", debugId, "TCP connected local=%s remote=%s", channel.getLocalAddress(), channel.getRemoteAddress());
-				channel.configureBlocking(false);
 				NioHolepunchConnection connection = NioHolepunchConnection.negotiate(debugId, channel, request, route);
 				channel = null;
 				DebugLog.log("CLIENT", debugId, "connect completed");

@@ -44,7 +44,7 @@ public final class MinecraftCrypt {
 		try {
 			byte[] secret = rsaDecrypt(key, encryptedSecret);
 			byte[] challenge = rsaDecrypt(key, encryptedChallenge);
-			if (secret.length != 16 || !constantTimeEquals(challenge, expectedChallenge)) {
+			if (secret.length != 16 || !MessageDigest.isEqual(challenge, expectedChallenge)) {
 				throw new GeneralSecurityException("invalid login encryption response");
 			}
 			return secret.clone();
@@ -61,11 +61,13 @@ public final class MinecraftCrypt {
 		return CipherStreamState.create(Cipher.DECRYPT_MODE, secret);
 	}
 
-	public static boolean constantTimeEquals(byte[] left, byte[] right) {
-		return MessageDigest.isEqual(left, right);
+	public static byte[] randomBytes(int length) {
+		byte[] bytes = new byte[length];
+		RANDOM.nextBytes(bytes);
+		return bytes;
 	}
 
-	public static SecretKey secretKey(byte[] secret) {
+	static SecretKey secretKey(byte[] secret) {
 		if (secret.length != 16) {
 			throw new IllegalArgumentException("Minecraft AES key must be 16 bytes");
 		}

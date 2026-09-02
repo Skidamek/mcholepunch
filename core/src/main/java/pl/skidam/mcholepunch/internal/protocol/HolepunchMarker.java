@@ -152,7 +152,7 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 		try {
 			return MessageDigest.getInstance("SHA-256");
 		} catch (NoSuchAlgorithmException exception) {
-			throw new ExceptionInInitializerError(exception);
+			throw new IllegalStateException("SHA-256 is missing from the JRE", exception);
 		}
 	}
 }

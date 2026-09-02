@@ -3,6 +3,8 @@ package pl.skidam.mcholepunch.internal.protocol;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
@@ -150,18 +152,18 @@ public final class LoginCodec {
 		return ByteBuffer.wrap(packet.toByteArray());
 	}
 
-	public static String readString(ByteBuffer input) throws IOException {
+	static String readString(ByteBuffer input) throws IOException {
 		int length = VarInts.read(input);
 		if (length < 0 || length > MAX_STRING_BYTES || length > input.remaining()) {
 			throw new IOException("invalid Minecraft string length");
 		}
 		byte[] value = new byte[length];
 		input.get(value);
-		String result = new String(value, StandardCharsets.UTF_8);
-		if (result.getBytes(StandardCharsets.UTF_8).length != length) {
-			throw new IOException("invalid UTF-8 string");
+		try {
+			return StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT).onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(value)).toString();
+		} catch (CharacterCodingException exception) {
+			throw new IOException("invalid UTF-8 string", exception);
 		}
-		return result;
 	}
 
 	public static byte[] readByteArray(ByteBuffer input, int maximumLength) throws IOException {

@@ -5,7 +5,6 @@ import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
-import java.security.SecureRandom;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
@@ -30,6 +29,8 @@ import pl.skidam.mcholepunch.server.HolepunchServerRegistry;
 
 public final class NettyLoginNegotiator {
 	public static final Duration DEFAULT_RESPONSE_TIMEOUT = Duration.ofSeconds(10);
+	/** The challenge mirrors vanilla's login verify token, which is four bytes. */
+	private static final int CHALLENGE_BYTES = 4;
 
 	private final Channel channel;
 	private final KeyPair keyPair;
@@ -39,7 +40,7 @@ public final class NettyLoginNegotiator {
 	private final HolepunchServerRegistry.Registration registration;
 	private final NettyTakeoverSpec takeoverSpec;
 	private final Duration responseTimeout;
-	private final byte[] challenge = new byte[4];
+	private final byte[] challenge;
 	private State state = State.NEW;
 	private ScheduledFuture<?> responseTimeoutFuture;
 	private ScheduledFuture<?> setupTimeoutFuture;
@@ -59,7 +60,7 @@ public final class NettyLoginNegotiator {
 		this.registration = Objects.requireNonNull(registration, "registration");
 		this.takeoverSpec = Objects.requireNonNull(takeoverSpec, "takeoverSpec");
 		this.responseTimeout = requirePositive(responseTimeout, "responseTimeout");
-		new SecureRandom().nextBytes(challenge);
+		this.challenge = MinecraftCrypt.randomBytes(CHALLENGE_BYTES);
 	}
 
 	public void start() {

@@ -9,9 +9,9 @@ import java.util.UUID;
 
 import pl.skidam.mcholepunch.HolepunchFailure;
 import pl.skidam.mcholepunch.HolepunchOptions;
-import pl.skidam.mcholepunch.HolepunchRequest;
 import pl.skidam.mcholepunch.HolepunchRoute;
 import pl.skidam.mcholepunch.internal.DebugLog;
+import pl.skidam.mcholepunch.internal.HolepunchRequest;
 import pl.skidam.mcholepunch.internal.Usernames;
 import pl.skidam.mcholepunch.internal.crypto.CipherStreamState;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;

@@ -9,9 +9,9 @@ import java.util.concurrent.Executors;
 
 import pl.skidam.mcholepunch.HolepunchConnection;
 import pl.skidam.mcholepunch.HolepunchFailure;
-import pl.skidam.mcholepunch.HolepunchRequest;
 import pl.skidam.mcholepunch.HolepunchRoute;
 import pl.skidam.mcholepunch.internal.DebugLog;
+import pl.skidam.mcholepunch.internal.HolepunchRequest;
 import pl.skidam.mcholepunch.internal.net.VanillaAddressResolver;
 
 public final class NioHolepunchClient {

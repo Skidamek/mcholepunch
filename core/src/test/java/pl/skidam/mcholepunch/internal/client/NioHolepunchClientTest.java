@@ -13,8 +13,8 @@ import org.junit.jupiter.api.Test;
 
 import pl.skidam.mcholepunch.HolepunchHandler;
 import pl.skidam.mcholepunch.HolepunchOptions;
-import pl.skidam.mcholepunch.HolepunchRequest;
 import pl.skidam.mcholepunch.HolepunchRoute;
+import pl.skidam.mcholepunch.internal.HolepunchRequest;
 import pl.skidam.mcholepunch.internal.net.VanillaAddressResolver;
 
 class NioHolepunchClientTest {

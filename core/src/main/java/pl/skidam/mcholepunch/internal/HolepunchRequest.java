@@ -1,6 +1,9 @@
-package pl.skidam.mcholepunch;
+package pl.skidam.mcholepunch.internal;
 
 import java.util.Objects;
+
+import pl.skidam.mcholepunch.HolepunchHandler;
+import pl.skidam.mcholepunch.HolepunchOptions;
 
 public record HolepunchRequest(String host, int port, int protocolVersion, HolepunchHandler handler, HolepunchOptions options) {
 	public HolepunchRequest {

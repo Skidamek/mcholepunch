@@ -3,6 +3,7 @@ package pl.skidam.mcholepunch;
 import java.util.Objects;
 import java.util.concurrent.CompletionStage;
 
+import pl.skidam.mcholepunch.internal.HolepunchRequest;
 import pl.skidam.mcholepunch.internal.client.NioHolepunchClient;
 
 public final class HolepunchClient {

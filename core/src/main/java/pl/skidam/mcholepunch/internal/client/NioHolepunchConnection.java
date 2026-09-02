@@ -9,6 +9,7 @@ import java.security.GeneralSecurityException;
 import java.util.ArrayDeque;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
@@ -524,7 +525,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		synchronized (readFlow) {
 			paused = readsPaused;
 		}
-		return String.format(java.util.Locale.ROOT, "open=%s connected=%s closed=%s openCallback=%s phase=%s raw=%s readsPaused=%s pending=%d queue=%d sent=%d received=%d " + "writerShutdown=%s readerShutdown=%s",
+		return String.format(Locale.ROOT, "open=%s connected=%s closed=%s openCallback=%s phase=%s raw=%s readsPaused=%s pending=%d queue=%d sent=%d received=%d " + "writerShutdown=%s readerShutdown=%s",
 				channel.isOpen(),
 				channel.isConnected(), closed.get(), openSucceeded.get(), handoff.phase(), encryption.isRaw(), paused, pendingBytes.get(), queueDepth, sentBytes.get(), receivedBytes.get(), writerExecutor.isShutdown(),
 				readerExecutor.isShutdown());

@@ -3,6 +3,7 @@ package pl.skidam.mcholepunch.server.netty;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
@@ -501,7 +502,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 	}
 
 	private String debugState() {
-		return String.format(java.util.Locale.ROOT,
+		return String.format(Locale.ROOT,
 				"active=%s open=%s registered=%s writable=%s autoRead=%s applicationReadsPaused=%s readDeliveryInFlight=%s phase=%s raw=%s pending=%d queue=%d writing=%s sent=%d received=%d "
 						+ "beforeWritable=%d beforeUnwritable=%d pipeline=%s",
 				channel.isActive(),

@@ -54,7 +54,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 		ReferenceCountUtil.release(frame);
 		releaseHeld();
 		ctx.pipeline().remove(this);
-		DebugLog.log("login takeover", 0, "marker accepted", "name", loginStart.username(), "remote", ctx.channel().remoteAddress());
+		DebugLog.log("login takeover", 0, "marker accepted name=%s remote=%s", loginStart.username(), ctx.channel().remoteAddress());
 		new NettyLoginNegotiator(ctx.channel(), keyPair, loginStart.username(), ctx.channel().remoteAddress(), marker.get(), registration, NettyTakeoverSpec.minecraftLogin()).start();
 	}
 

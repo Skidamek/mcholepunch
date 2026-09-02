@@ -12,6 +12,7 @@ import java.util.function.Supplier;
 
 /** Opt-in transport tracing used to diagnose holepunch connections. */
 public final class DebugLog {
+	private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcholepunch.debug", "false"));
 	private static final int PREVIEW_BYTES = Math.max(0, Integer.getInteger("mcholepunch.debug.previewBytes", 16));
 	private static final long START_NANOS = System.nanoTime();
 	private static final AtomicLong NEXT_ID = new AtomicLong();
@@ -24,7 +25,7 @@ public final class DebugLog {
 	private DebugLog() {}
 
 	public static boolean enabled() {
-		return Boolean.parseBoolean(System.getProperty("mcholepunch.debug", "false"));
+		return ENABLED;
 	}
 
 	public static long nextConnectionId() {

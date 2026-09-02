@@ -8,7 +8,7 @@ public final class NettyCipherEncoder extends MessageToByteEncoder<ByteBuf> {
 	private final NettyEncryption encryption;
 
 	public NettyCipherEncoder(NettyEncryption encryption) {
-		super(false);
+		super(true);
 		this.encryption = encryption;
 	}
 

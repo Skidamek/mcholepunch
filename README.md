@@ -40,7 +40,7 @@ HolepunchConnection connection = HolepunchClient.connect(
 ```
 
 AutoModpack uses this to run its modpack protocol through the one port a modded server is
-guaranteed to have open. It layers its own TLS on top with the two-phase handoff described below.
+guaranteed to have open. It layers its own TLS on top with the transport handoff described below.
 
 ## How it works
 
@@ -69,14 +69,16 @@ SHA-256 of `mcholepunch:uuid-mask` keyed by the nonce, so the constant does not 
 clear. Decoding reverses the mask with the received nonce and compares the constant. A random
 UUID passes with probability 2^-96; a real account UUID never does.
 
-### The two-phase handoff
+### The transport handoff
 
 An application that wants to change the wire format midstream (AutoModpack inserts TLS) must not
-race its own bytes into the old format. `prepareTransportUpgrade()` exchanges encrypted READY and
-ACK control frames, `commitTransportUpgrade()` exchanges COMMIT, and only then does
-`isRaw()` flip. Writes before the flip travel the AES transport and surface in the peer's
-`onRead`; writes after it travel the raw stream and surface in `onRawRead`. Past the flip,
-mcholepunch does not interpret the bytes and does not authenticate the peer; the stream is yours.
+race its own bytes into the old format. `commitTransportUpgrade()` exchanges an encrypted COMMIT
+control frame in each direction, and both endpoints flip to the raw stream at the same stream
+position. Bytes flushed before the local COMMIT travel the AES transport and surface in the
+peer's `onRead`; writes submitted while the commit is in flight fail, so an application holds its
+own output across the flip; writes after it travel the raw stream and surface in `onRawRead`.
+Past the flip, mcholepunch does not interpret the bytes and does not authenticate the peer; the
+stream is yours.
 
 ## Modules
 

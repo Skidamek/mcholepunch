@@ -8,9 +8,8 @@ public interface HolepunchConnection extends AutoCloseable {
 	 * Queues the remaining bytes without changing the supplied buffer's position. The caller must not mutate or reuse the buffer until the returned stage completes.
 	 * <p>
 	 * Bytes submitted while {@link #isRaw()} is {@code false} are carried by the encrypted transport and delivered to the peer through {@link HolepunchHandler#onRead(ByteBuffer)}; bytes
-	 * submitted while it is {@code true} are carried by the raw stream and delivered through {@link HolepunchHandler#onRawRead(ByteBuffer)}. Writes submitted between
-	 * {@link #prepareTransportUpgrade()} and the raw switch fail instead of being carried, so an application must hold its own output across the upgrade and submit it once
-	 * {@link #commitTransportUpgrade()} has completed.
+	 * submitted while it is {@code true} are carried by the raw stream and delivered through {@link HolepunchHandler#onRawRead(ByteBuffer)}. Writes submitted while
+	 * {@link #commitTransportUpgrade()} is in flight fail instead of being carried, so an application must hold its own output across the flip and submit it once the commit has completed.
 	 */
 	CompletionStage<Void> write(ByteBuffer data);
 
@@ -21,14 +20,9 @@ public interface HolepunchConnection extends AutoCloseable {
 	boolean isRaw();
 
 	/**
-	 * Starts the encrypted preparation phase. The stage completes after both endpoints have exchanged READY and ACK control frames. Application bytes must not be sent as the new raw stream until
-	 * {@link #commitTransportUpgrade()} completes.
-	 */
-	CompletionStage<Void> prepareTransportUpgrade();
-
-	/**
-	 * Commits the prepared handoff. The COMMIT control frame is sent through the encrypted transport, and the stage completes only after both COMMIT frames have been flushed and received. The transport
-	 * then carries the caller-owned raw stream without mcholepunch interpreting its contents.
+	 * Switches the stream to the caller-owned raw format. The COMMIT control frame travels the encrypted transport, and the stage completes only after both endpoints have flushed their
+	 * COMMIT and received the peer's; both then flip at the same stream position. Writes submitted while the commit is in flight fail, bytes flushed before the COMMIT surface in the peer's
+	 * encrypted era, and everything after it is delivered raw without mcholepunch interpreting its contents.
 	 */
 	CompletionStage<Void> commitTransportUpgrade();
 

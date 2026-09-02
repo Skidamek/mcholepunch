@@ -17,9 +17,7 @@ public record TransportFrame(Type type, byte[] payload) {
 
 	public enum Type {
 		DATA((byte) 0),
-		READY((byte) 1),
-		ACK((byte) 2),
-		COMMIT((byte) 3);
+		COMMIT((byte) 1);
 
 		private final byte wire;
 

@@ -42,7 +42,7 @@ public final class NettyTransportDecoder extends ByteToMessageDecoder {
 									output.add(Unpooled.wrappedBuffer(payload));
 								}
 							}
-							case READY, ACK, COMMIT -> connection.receiveControl(frame.type());
+							case COMMIT -> connection.receiveControl(frame.type());
 						}
 					}
 				} catch (IOException exception) {

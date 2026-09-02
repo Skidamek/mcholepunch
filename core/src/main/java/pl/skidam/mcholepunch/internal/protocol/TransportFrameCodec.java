@@ -14,14 +14,6 @@ public final class TransportFrameCodec {
 		return frame.flip();
 	}
 
-	public static ByteBuffer ready() {
-		return control(TransportFrame.Type.READY);
-	}
-
-	public static ByteBuffer ack() {
-		return control(TransportFrame.Type.ACK);
-	}
-
 	public static ByteBuffer commit() {
 		return control(TransportFrame.Type.COMMIT);
 	}

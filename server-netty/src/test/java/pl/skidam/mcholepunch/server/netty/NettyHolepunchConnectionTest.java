@@ -98,13 +98,13 @@ class NettyHolepunchConnectionTest {
 	}
 
 	@Test
-	void rejectsWritesWhileTransportUpgradeIsInProgress() throws Exception {
+	void rejectsWritesWhileTheCommitIsInFlight() throws Exception {
 		EmbeddedChannel channel = new EmbeddedChannel();
 		NettyEncryption encryption = new NettyEncryption(MinecraftCrypt.newSecret());
 		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, Runnable::run, new HolepunchHandler() {
 		}, 1024, encryption);
 
-		connection.prepareTransportUpgrade();
+		connection.commitTransportUpgrade();
 		channel.runPendingTasks();
 		CompletionStage<Void> write = connection.write(ByteBuffer.wrap(new byte[]{1}));
 		channel.runPendingTasks();

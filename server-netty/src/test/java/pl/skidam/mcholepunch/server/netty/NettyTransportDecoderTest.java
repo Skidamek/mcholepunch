@@ -1,9 +1,11 @@
 package pl.skidam.mcholepunch.server.netty;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
@@ -19,49 +21,80 @@ import pl.skidam.mcholepunch.internal.protocol.TransportFrameCodec;
 
 class NettyTransportDecoderTest {
 	@Test
-	void acknowledgesReadyBeforeSwitchingToRawPipe() throws Exception {
+	void carriesDataThenCommitsToTheRawPipe() throws Exception {
 		byte[] secret = MinecraftCrypt.newSecret();
 		NettyEncryption serverEncryption = new NettyEncryption(secret);
 		TransportEncryption clientEncryption = TransportEncryption.server(secret);
-		AtomicReference<byte[]> received = new AtomicReference<>();
+		AtomicReference<String> framed = new AtomicReference<>();
+		AtomicReference<String> raw = new AtomicReference<>();
 		EmbeddedChannel channel = new EmbeddedChannel();
 		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, Runnable::run, new HolepunchHandler() {
 			@Override
 			public void onRead(ByteBuffer data) {
-				byte[] bytes = new byte[data.remaining()];
-				data.get(bytes);
-				received.set(bytes);
+				framed.set(remaining(data));
+			}
+
+			@Override
+			public void onRawRead(ByteBuffer data) {
+				raw.set(remaining(data));
 			}
 		}, 1024, serverEncryption);
 		channel.pipeline().addLast("transport-decoder", new NettyTransportDecoder(serverEncryption, connection, 1024));
 		channel.pipeline().addLast("raw", new NettyHolepunchConnection.RawInboundHandler(connection));
 		channel.pipeline().addLast("transport-encoder", new NettyCipherEncoder(serverEncryption));
 
-		var prepared = connection.prepareTransportUpgrade().toCompletableFuture();
-		channel.runPendingTasks();
-		ByteBuf encryptedReady = channel.readOutbound();
-		assertArrayEquals(new byte[]{1, 0}, clientEncryption.decrypt(readBytes(encryptedReady)));
+		channel.writeInbound(Unpooled.wrappedBuffer(clientEncryption.encrypt(bytes(TransportFrameCodec.data(ByteBuffer.wrap("framed".getBytes(StandardCharsets.UTF_8)))))));
+		assertEquals("framed", framed.get());
 
-		channel.writeInbound(Unpooled.wrappedBuffer(clientEncryption.encrypt(bytes(TransportFrameCodec.ready()))));
-		ByteBuf encryptedAck = channel.readOutbound();
-		assertArrayEquals(new byte[]{2, 0}, clientEncryption.decrypt(readBytes(encryptedAck)));
-		channel.writeInbound(Unpooled.wrappedBuffer(clientEncryption.encrypt(bytes(TransportFrameCodec.ack()))));
-		prepared.get();
 		var committed = connection.commitTransportUpgrade().toCompletableFuture();
 		channel.runPendingTasks();
 		ByteBuf encryptedCommit = channel.readOutbound();
-		assertArrayEquals(new byte[]{3, 0}, clientEncryption.decrypt(readBytes(encryptedCommit)));
+		assertArrayEquals(new byte[]{1, 0}, clientEncryption.decrypt(readBytes(encryptedCommit)), "COMMIT must be wire byte 1 with an empty payload");
+
 		channel.writeInbound(Unpooled.wrappedBuffer(clientEncryption.encrypt(bytes(TransportFrameCodec.commit()))));
 		committed.get();
 		assertTrue(serverEncryption.isRaw());
 
 		clientEncryption.activateRaw();
-		byte[] payload = {4, 5, 6};
-		byte[] encryptedData = clientEncryption.encrypt(payload);
-		channel.writeInbound(Unpooled.wrappedBuffer(encryptedData, new byte[0]));
+		byte[] payload = "raw".getBytes(StandardCharsets.UTF_8);
+		channel.writeInbound(Unpooled.wrappedBuffer(payload));
 
-		assertArrayEquals(payload, received.get());
+		assertEquals("raw", raw.get());
 		channel.finishAndReleaseAll();
+	}
+
+	@Test
+	void passesRawBytesThroughOnceCommitted() throws Exception {
+		byte[] secret = MinecraftCrypt.newSecret();
+		NettyEncryption serverEncryption = new NettyEncryption(secret);
+		TransportEncryption clientEncryption = TransportEncryption.server(secret);
+		AtomicReference<String> raw = new AtomicReference<>();
+		EmbeddedChannel channel = new EmbeddedChannel();
+		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, Runnable::run, new HolepunchHandler() {
+			@Override
+			public void onRawRead(ByteBuffer data) {
+				raw.set(remaining(data));
+			}
+		}, 1024, serverEncryption);
+		channel.pipeline().addLast("transport-decoder", new NettyTransportDecoder(serverEncryption, connection, 1024));
+		channel.pipeline().addLast("raw", new NettyHolepunchConnection.RawInboundHandler(connection));
+		channel.pipeline().addLast("transport-encoder", new NettyCipherEncoder(serverEncryption));
+
+		var committed = connection.commitTransportUpgrade().toCompletableFuture();
+		channel.runPendingTasks();
+		channel.readOutbound();
+		channel.writeInbound(Unpooled.wrappedBuffer(clientEncryption.encrypt(bytes(TransportFrameCodec.commit()))));
+		committed.get();
+
+		channel.writeInbound(Unpooled.wrappedBuffer(new byte[]{4, 5, 6}));
+		assertArrayEquals(new byte[]{4, 5, 6}, raw.get().getBytes(StandardCharsets.UTF_8));
+		channel.finishAndReleaseAll();
+	}
+
+	private static String remaining(ByteBuffer data) {
+		byte[] bytes = new byte[data.remaining()];
+		data.duplicate().get(bytes);
+		return new String(bytes, StandardCharsets.UTF_8);
 	}
 
 	private static byte[] bytes(ByteBuffer buffer) {

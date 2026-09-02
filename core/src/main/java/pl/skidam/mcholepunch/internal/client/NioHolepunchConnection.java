@@ -64,7 +64,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private byte[] initialDataSnapshot = new byte[0];
 	private ByteBuffer encryptedOutput = ByteBuffer.allocate(8192);
 	private final TransportHandoff handoff = new TransportHandoff();
-	private CompletableFuture<Void> prepareResult;
 	private CompletableFuture<Void> commitResult;
 
 	private NioHolepunchConnection(long debugId, SocketChannel channel, HolepunchRequest request, ClientNegotiation.Result result) throws GeneralSecurityException {
@@ -185,9 +184,9 @@ final class NioHolepunchConnection implements HolepunchConnection {
 			if (closed.get()) {
 				pendingBytes.addAndGet(-size);
 				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
-			} else if (handoff.blocksData()) {
+			} else if (handoff.isCommitting()) {
 				pendingBytes.addAndGet(-size);
-				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport upgrade in progress", null));
+				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
 			} else {
 				boolean rawEra = handoff.isRaw();
 				writes.add(new WriteRequest(copy, size, result, rawEra, TransportFrame.Type.DATA));
@@ -195,29 +194,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				writes.notifyAll();
 			}
 		}
-		return result;
-	}
-
-	@Override
-	public CompletionStage<Void> prepareTransportUpgrade() {
-		TransportHandoff.Transition transition;
-		CompletableFuture<Void> result;
-		synchronized (writes) {
-			if (closed.get()) {
-				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
-			}
-			if (handoff.isRaw()) {
-				return CompletableFuture.completedFuture(null);
-			}
-			if (prepareResult != null) {
-				return prepareResult;
-			}
-			prepareResult = new CompletableFuture<>();
-			result = prepareResult;
-			transition = handoff.requestPrepare();
-			applyTransition(transition);
-		}
-		completeTransition(transition);
 		return result;
 	}
 
@@ -235,9 +211,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 			if (commitResult != null) {
 				return commitResult;
 			}
-			if (!handoff.isPrepared()) {
-				return CompletableFuture.failedFuture(new IllegalStateException("transport handoff is not prepared"));
-			}
 			commitResult = new CompletableFuture<>();
 			result = commitResult;
 			transition = handoff.requestCommit();
@@ -247,17 +220,13 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		return result;
 	}
 
-	private void receiveControl(TransportFrame.Type type) throws IOException {
+	private void receiveControl(TransportFrame.Type type) {
 		TransportHandoff.Transition transition;
 		synchronized (writes) {
 			if (closed.get() || handoff.isRaw()) {
 				return;
 			}
-			try {
-				transition = handoff.onPeerControlReceived(type);
-			} catch (IllegalStateException exception) {
-				throw new IOException("invalid transport handoff control " + type, exception);
-			}
+			transition = handoff.onPeerControlReceived(type);
 			applyTransition(transition);
 		}
 		completeTransition(transition);
@@ -273,8 +242,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				try {
 					ByteBuffer frame = write.kind() == TransportFrame.Type.DATA && write.rawEra() ? write.data().duplicate() : switch (write.kind()) {
 						case DATA -> TransportFrameCodec.data(write.data());
-						case READY -> TransportFrameCodec.ready();
-						case ACK -> TransportFrameCodec.ack();
 						case COMMIT -> TransportFrameCodec.commit();
 					};
 					ensureEncryptedCapacity(frame.remaining());
@@ -288,15 +255,11 @@ final class NioHolepunchConnection implements HolepunchConnection {
 						long pending = pendingBytes.addAndGet(-write.size());
 						DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d pending=%d", write.size(), total, pending);
 					}
-					TransportHandoff.Transition transition = null;
 					if (write.kind() != TransportFrame.Type.DATA) {
+						TransportHandoff.Transition transition;
 						synchronized (writes) {
-							try {
-								transition = handoff.onLocalControlSent(write.kind());
-								applyTransition(transition);
-							} catch (IllegalStateException exception) {
-								throw new IOException("invalid local transport handoff control " + write.kind(), exception);
-							}
+							transition = handoff.onLocalControlSent(write.kind());
+							applyTransition(transition);
 						}
 						completeTransition(transition);
 					}
@@ -357,7 +320,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		for (TransportFrame frame : frames) {
 			switch (frame.type()) {
 				case DATA -> delivered = handleData(frame.payload());
-				case READY, ACK, COMMIT -> receiveControl(frame.type());
+				case COMMIT -> receiveControl(frame.type());
 			}
 		}
 		if (delivered != null) {
@@ -463,7 +426,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (!transition.outbound().isEmpty()) {
 			writes.notifyAll();
 		}
-		if (transition.activatesRaw()) {
+		if (transition.activatedRaw()) {
 			encryption.activateRaw();
 			writes.notifyAll();
 			DebugLog.log("CLIENT", debugId, "transport switched to raw pass-through");
@@ -471,10 +434,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	}
 
 	private void completeTransition(TransportHandoff.Transition transition) {
-		if (transition.prepared() && prepareResult != null) {
-			prepareResult.complete(null);
-		}
-		if (transition.committed() && commitResult != null) {
+		if (transition.activatedRaw() && commitResult != null) {
 			commitResult.complete(null);
 		}
 	}
@@ -507,7 +467,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				}
 				write.result().completeExceptionally(failure);
 			}
-			if (prepareResult != null) prepareResult.completeExceptionally(failure);
 			if (commitResult != null) commitResult.completeExceptionally(failure);
 			writes.notifyAll();
 		}

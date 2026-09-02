@@ -2,7 +2,6 @@ package pl.skidam.mcholepunch.internal.transport;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.util.List;
@@ -13,69 +12,63 @@ import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 
 class TransportHandoffTest {
 	@Test
-	void keepsEncryptedDataFlowingUntilLocalPrepare() {
+	void flipsOnlyAfterBothCommitFramesCross() {
 		TransportHandoff handoff = new TransportHandoff();
-
-		assertEquals(List.of(), handoff.onPeerControlReceived(TransportFrame.Type.READY).outbound());
-		assertFalse(handoff.blocksData());
-
-		assertEquals(List.of(TransportFrame.Type.READY), handoff.requestPrepare().outbound());
-		assertTrue(handoff.blocksData());
-		assertEquals(List.of(TransportFrame.Type.ACK), handoff.onLocalControlSent(TransportFrame.Type.READY).outbound());
-		assertFalse(handoff.isPrepared());
-		assertTrue(handoff.onLocalControlSent(TransportFrame.Type.ACK).outbound().isEmpty());
-
-		assertTrue(handoff.onPeerControlReceived(TransportFrame.Type.ACK).prepared());
-		assertTrue(handoff.isPrepared());
-	}
-
-	@Test
-	void commitRequiresBothCommitFrames() {
-		TransportHandoff handoff = preparedHandoff();
 
 		assertEquals(List.of(TransportFrame.Type.COMMIT), handoff.requestCommit().outbound());
+		assertTrue(handoff.isCommitting());
+		assertFalse(handoff.onLocalControlSent(TransportFrame.Type.COMMIT).activatedRaw());
 		assertFalse(handoff.isRaw());
-		assertFalse(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).committed());
-		assertFalse(handoff.isRaw());
-		assertTrue(handoff.onLocalControlSent(TransportFrame.Type.COMMIT).committed());
+		assertTrue(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).activatedRaw());
 		assertTrue(handoff.isRaw());
-		assertFalse(handoff.blocksData());
+		assertFalse(handoff.isCommitting());
 	}
 
 	@Test
-	void acceptsPeerCommitWhileLocalAdapterIsStillPreparing() {
-		TransportHandoff handoff = preparedHandoff();
-		// The peer may commit first while the local owner is still preparing its adapter.
-		// The local COMMIT is still required before raw activation.
-		handoff.onPeerControlReceived(TransportFrame.Type.COMMIT);
+	void peerCommitAloneDoesNotFlipUntilLocalCommits() {
+		TransportHandoff handoff = new TransportHandoff();
+
+		assertFalse(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).activatedRaw());
+		assertFalse(handoff.isCommitting(), "the peer's intent must not block local writes");
+
+		assertEquals(List.of(TransportFrame.Type.COMMIT), handoff.requestCommit().outbound());
+		assertTrue(handoff.onLocalControlSent(TransportFrame.Type.COMMIT).activatedRaw());
+		assertTrue(handoff.isRaw());
+	}
+
+	@Test
+	void requestCommitIsIdempotent() {
+		TransportHandoff handoff = new TransportHandoff();
+
+		assertEquals(List.of(TransportFrame.Type.COMMIT), handoff.requestCommit().outbound());
+		assertEquals(List.of(), handoff.requestCommit().outbound());
+		assertTrue(handoff.onLocalControlSent(TransportFrame.Type.COMMIT).outbound().isEmpty());
+		assertEquals(List.of(), handoff.requestCommit().outbound());
+	}
+
+	@Test
+	void controlFramesAreIgnoredAfterTheFlip() {
+		TransportHandoff handoff = new TransportHandoff();
 		handoff.requestCommit();
 		handoff.onLocalControlSent(TransportFrame.Type.COMMIT);
-		assertTrue(handoff.isRaw());
+		assertTrue(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).activatedRaw());
+
+		assertTrue(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).outbound().isEmpty());
+		assertTrue(handoff.requestCommit().outbound().isEmpty());
 	}
 
 	@Test
-	void rejectsCommitBeforePreparation() {
+	void phasesProgressThroughTheCommit() {
 		TransportHandoff handoff = new TransportHandoff();
-		assertThrows(IllegalStateException.class, handoff::requestCommit);
-		assertThrows(IllegalStateException.class, () -> handoff.onPeerControlReceived(TransportFrame.Type.ACK));
-	}
+		assertEquals(TransportHandoff.Phase.INITIAL, handoff.phase());
 
-	@Test
-	void recordsPeerAckBeforeLocalWriteCallbackButWaitsForLocalReady() {
-		TransportHandoff handoff = new TransportHandoff();
-		handoff.requestPrepare();
+		handoff.requestCommit();
+		assertEquals(TransportHandoff.Phase.COMMITTING, handoff.phase());
 
-		assertFalse(handoff.onPeerControlReceived(TransportFrame.Type.ACK).prepared());
-		assertTrue(handoff.onLocalControlSent(TransportFrame.Type.READY).prepared());
-	}
+		handoff.onLocalControlSent(TransportFrame.Type.COMMIT);
+		assertEquals(TransportHandoff.Phase.COMMITTING, handoff.phase());
 
-	private static TransportHandoff preparedHandoff() {
-		TransportHandoff handoff = new TransportHandoff();
-		handoff.requestPrepare();
-		handoff.onLocalControlSent(TransportFrame.Type.READY);
-		handoff.onPeerControlReceived(TransportFrame.Type.READY);
-		handoff.onLocalControlSent(TransportFrame.Type.ACK);
-		handoff.onPeerControlReceived(TransportFrame.Type.ACK);
-		return handoff;
+		handoff.onPeerControlReceived(TransportFrame.Type.COMMIT);
+		assertEquals(TransportHandoff.Phase.RAW, handoff.phase());
 	}
 }

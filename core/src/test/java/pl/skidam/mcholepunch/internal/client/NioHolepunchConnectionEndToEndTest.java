@@ -99,15 +99,12 @@ class NioHolepunchConnectionEndToEndTest {
 			connection.write(ByteBuffer.wrap("ping".getBytes(StandardCharsets.UTF_8))).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 			assertTrue(server.awaitClientData("ping"));
 
-			CompletableFuture<Void> prepared = connection.prepareTransportUpgrade().toCompletableFuture();
-			server.prepare();
-			prepared.get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
-			assertTrue(server.awaitPrepared());
+			CompletionStage<Void> committed = connection.commitTransportUpgrade();
 			CompletionStage<Void> rejected = connection.write(ByteBuffer.wrap("dropped".getBytes(StandardCharsets.UTF_8)));
-			assertTrue(rejected.toCompletableFuture().isCompletedExceptionally(), "writes during the upgrade window must fail");
+			assertTrue(rejected.toCompletableFuture().isCompletedExceptionally(), "writes during the commit flight must fail");
 
 			server.commit();
-			connection.commitTransportUpgrade().toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			committed.toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 			assertTrue(connection.isRaw());
 
 			connection.write(ByteBuffer.wrap("raw-out".getBytes(StandardCharsets.UTF_8))).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
@@ -140,7 +137,6 @@ class NioHolepunchConnectionEndToEndTest {
 		private final List<String> rawClientData = Collections.synchronizedList(new ArrayList<>());
 		private final CountDownLatch clientDataLatch = new CountDownLatch(1);
 		private final CountDownLatch rawClientDataLatch = new CountDownLatch(1);
-		private final CountDownLatch preparedLatch = new CountDownLatch(1);
 		private final CountDownLatch running = new CountDownLatch(1);
 		private final ArrayDeque<ByteBuffer> loginFrames = new ArrayDeque<>();
 		private volatile IOException failure;
@@ -246,18 +242,15 @@ class NioHolepunchConnectionEndToEndTest {
 								clientData.add(new String(frame.payload(), StandardCharsets.UTF_8));
 								clientDataLatch.countDown();
 							}
-							case READY, ACK, COMMIT -> sendOutbound(channel, apply(handoff.onPeerControlReceived(frame.type())));
+							case COMMIT -> sendOutbound(channel, apply(handoff.onPeerControlReceived(frame.type())));
 						}
-					}
-					if (handoff.isPrepared()) {
-						preparedLatch.countDown();
 					}
 				}
 			}
 		}
 
 		private TransportHandoff.Transition apply(TransportHandoff.Transition transition) {
-			if (transition.activatesRaw()) {
+			if (transition.activatedRaw()) {
 				encryption.activateRaw();
 			}
 			return transition;
@@ -266,8 +259,6 @@ class NioHolepunchConnectionEndToEndTest {
 		private void sendOutbound(SocketChannel channel, TransportHandoff.Transition transition) throws IOException {
 			for (TransportFrame.Type type : transition.outbound()) {
 				writeEncrypted(channel, switch (type) {
-					case READY -> TransportFrameCodec.ready();
-					case ACK -> TransportFrameCodec.ack();
 					case COMMIT -> TransportFrameCodec.commit();
 					case DATA -> throw new IllegalArgumentException("controls only");
 				});
@@ -293,11 +284,6 @@ class NioHolepunchConnectionEndToEndTest {
 		synchronized void writeTransportData(ByteBuffer payload) throws IOException {
 			awaitServerReady();
 			writeEncrypted(channel, TransportFrameCodec.data(payload));
-		}
-
-		synchronized void prepare() throws IOException {
-			awaitServerReady();
-			sendOutbound(channel, apply(handoff.requestPrepare()));
 		}
 
 		synchronized void commit() throws IOException {
@@ -338,10 +324,6 @@ class NioHolepunchConnectionEndToEndTest {
 				latch.await(100, TimeUnit.MILLISECONDS);
 			}
 			return values.contains(expected);
-		}
-
-		boolean awaitPrepared() throws InterruptedException {
-			return preparedLatch.await(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 		}
 
 		IOException failure() {

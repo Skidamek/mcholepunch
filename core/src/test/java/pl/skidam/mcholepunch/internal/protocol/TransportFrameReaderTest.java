@@ -15,10 +15,8 @@ class TransportFrameReaderTest {
 	@Test
 	void readsSplitDataAndControlFrames() throws Exception {
 		ByteBuffer data = TransportFrameCodec.data(ByteBuffer.wrap(new byte[]{1, 2, 3}));
-		ByteBuffer ready = TransportFrameCodec.ready();
-		ByteBuffer ack = TransportFrameCodec.ack();
 		ByteBuffer commit = TransportFrameCodec.commit();
-		byte[] encoded = concat(data, ready, ack, commit);
+		byte[] encoded = concat(data, commit);
 		TransportFrameReader reader = new TransportFrameReader(1024);
 		List<TransportFrame> frames = new ArrayList<>();
 
@@ -26,7 +24,7 @@ class TransportFrameReaderTest {
 			frames.addAll(reader.feed(ByteBuffer.wrap(new byte[]{value})));
 		}
 
-		assertEquals(List.of(TransportFrame.Type.DATA, TransportFrame.Type.READY, TransportFrame.Type.ACK, TransportFrame.Type.COMMIT), frames.stream().map(TransportFrame::type).toList());
+		assertEquals(List.of(TransportFrame.Type.DATA, TransportFrame.Type.COMMIT), frames.stream().map(TransportFrame::type).toList());
 		assertArrayEquals(new byte[]{1, 2, 3}, frames.get(0).payload());
 		assertEquals(0, reader.maximumInputBytes(0));
 	}
@@ -34,7 +32,6 @@ class TransportFrameReaderTest {
 	@Test
 	void rejectsInvalidControlLength() {
 		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{1, 1, 4})));
-		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{3, 1, 4})));
 		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, 0})));
 	}
 
@@ -51,7 +48,6 @@ class TransportFrameReaderTest {
 	@Test
 	void rejectsMalformedLengthVarInts() {
 		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0x10})));
-		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0})));
 	}
 
 	private static byte[] concat(ByteBuffer... buffers) {

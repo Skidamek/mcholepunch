@@ -44,7 +44,6 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 	private final AtomicLong sentBytes = new AtomicLong();
 	private final Deque<OutboundRequest> writes = new ArrayDeque<>();
 	private final Deque<PendingRead> pendingReads = new ArrayDeque<>();
-	private final AtomicReference<CompletableFuture<Void>> prepareResult = new AtomicReference<>();
 	private final AtomicReference<CompletableFuture<Void>> commitResult = new AtomicReference<>();
 	private final ScheduledFuture<?> watchdog;
 	private boolean writing;
@@ -123,9 +122,9 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
 					return;
 				}
-				if (handoff.blocksData()) {
+				if (handoff.isCommitting()) {
 					pendingBytes.addAndGet(-size);
-					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport upgrade in progress", null));
+					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
 					return;
 				}
 				boolean rawEra = handoff.isRaw();
@@ -135,42 +134,6 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 			});
 		} catch (Throwable throwable) {
 			pendingBytes.addAndGet(-size);
-			result.completeExceptionally(throwable);
-		}
-		return result;
-	}
-
-	@Override
-	public CompletionStage<Void> prepareTransportUpgrade() {
-		if (encryption == null) {
-			return CompletableFuture.failedFuture(new IllegalStateException("transport encryption is not installed"));
-		}
-		if (closed.get()) {
-			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
-		}
-		if (handoff.isRaw()) {
-			return CompletableFuture.completedFuture(null);
-		}
-		CompletableFuture<Void> result = new CompletableFuture<>();
-		CompletableFuture<Void> existing = prepareResult.get();
-		if (existing != null) {
-			return existing;
-		}
-		if (!prepareResult.compareAndSet(null, result)) {
-			return prepareResult.get();
-		}
-		try {
-			channel.eventLoop().execute(() -> {
-				if (closed.get()) {
-					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
-					return;
-				}
-				TransportHandoff.Transition transition = handoff.requestPrepare();
-				applyTransition(transition);
-				completeTransition(transition);
-				drainWrites();
-			});
-		} catch (Throwable throwable) {
 			result.completeExceptionally(throwable);
 		}
 		return result;
@@ -201,14 +164,10 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
 					return;
 				}
-				try {
-					TransportHandoff.Transition transition = handoff.requestCommit();
-					applyTransition(transition);
-					completeTransition(transition);
-					drainWrites();
-				} catch (IllegalStateException exception) {
-					result.completeExceptionally(exception);
-				}
+				TransportHandoff.Transition transition = handoff.requestCommit();
+				applyTransition(transition);
+				completeTransition(transition);
+				drainWrites();
 			});
 		} catch (Throwable throwable) {
 			result.completeExceptionally(throwable);
@@ -237,14 +196,10 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 			if (closed.get() || encryption == null || handoff.isRaw()) {
 				return;
 			}
-			try {
-				TransportHandoff.Transition transition = handoff.onPeerControlReceived(type);
-				applyTransition(transition);
-				completeTransition(transition);
-				drainWrites();
-			} catch (IllegalStateException exception) {
-				closeWith(new HolepunchFailure(HolepunchFailure.Kind.UNEXPECTED_PACKET, "invalid transport handoff control " + type, exception));
-			}
+			TransportHandoff.Transition transition = handoff.onPeerControlReceived(type);
+			applyTransition(transition);
+			completeTransition(transition);
+			drainWrites();
 		});
 	}
 
@@ -259,8 +214,6 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		writing = true;
 		ByteBuffer frame = switch (request.kind()) {
 			case DATA -> request.rawEra() ? request.data().duplicate() : TransportFrameCodec.data(request.data());
-			case READY -> TransportFrameCodec.ready();
-			case ACK -> TransportFrameCodec.ack();
 			case COMMIT -> TransportFrameCodec.commit();
 		};
 		DebugLog.log("SERVER", debugId, "event-loop writeAndFlush kind=%s plaintext=%d active=%s open=%s writable=%s beforeUnwritable=%d rawEra=%s", request.kind(), frame.remaining(), channel.isActive(),
@@ -282,15 +235,9 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 				long total = sentBytes.addAndGet(request.size());
 				DebugLog.log("SERVER", debugId, "write complete bytes=%d totalSent=%d pending=%d writable=%s", request.size(), total, pendingBytes.get(), channel.isWritable());
 			} else {
-				try {
-					TransportHandoff.Transition transition = handoff.onLocalControlSent(request.kind());
-					applyTransition(transition);
-					completeTransition(transition);
-				} catch (IllegalStateException exception) {
-					request.result().completeExceptionally(exception);
-					closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "invalid local transport handoff control", exception));
-					return;
-				}
+				TransportHandoff.Transition transition = handoff.onLocalControlSent(request.kind());
+				applyTransition(transition);
+				completeTransition(transition);
 			}
 			request.result().complete(null);
 			drainWrites();
@@ -301,18 +248,14 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		for (TransportFrame.Type type : transition.outbound()) {
 			writes.addLast(new OutboundRequest(null, 0, new CompletableFuture<>(), false, type));
 		}
-		if (transition.activatesRaw()) {
+		if (transition.activatedRaw()) {
 			encryption.activateRaw();
 			DebugLog.log("SERVER", debugId, "transport switched to raw pass-through");
 		}
 	}
 
 	private void completeTransition(TransportHandoff.Transition transition) {
-		if (transition.prepared()) {
-			CompletableFuture<Void> result = prepareResult.get();
-			if (result != null) result.complete(null);
-		}
-		if (transition.committed()) {
+		if (transition.activatedRaw()) {
 			CompletableFuture<Void> result = commitResult.get();
 			if (result != null) result.complete(null);
 		}
@@ -414,8 +357,6 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		}
 		DebugLog.failure("SERVER", debugId, "closing connection kind=" + failure.kind(), failure);
 		DebugLog.cancel(watchdog);
-		CompletableFuture<Void> prepare = prepareResult.get();
-		if (prepare != null) prepare.completeExceptionally(failure);
 		CompletableFuture<Void> commit = commitResult.get();
 		if (commit != null) commit.completeExceptionally(failure);
 		Runnable cleanup = () -> {

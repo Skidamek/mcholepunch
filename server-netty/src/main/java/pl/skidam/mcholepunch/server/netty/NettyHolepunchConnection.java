@@ -128,7 +128,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 					return;
 				}
 				boolean rawEra = handoff.isRaw();
-				writes.addLast(new OutboundRequest(copy, size, result, rawEra, Kind.DATA));
+				writes.addLast(new OutboundRequest(copy, size, result, rawEra, TransportFrame.Type.DATA));
 				DebugLog.log("SERVER", debugId, "write queued queueDepth=%d pending=%d rawEra=%s", writes.size(), pendingBytes.get(), rawEra);
 				drainWrites();
 			});
@@ -268,7 +268,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		ChannelFuture future = channel.writeAndFlush(Unpooled.wrappedBuffer(frame));
 		future.addListener((ChannelFutureListener) completed -> {
 			writing = false;
-			if (request.kind() == Kind.DATA) {
+			if (request.kind() == TransportFrame.Type.DATA) {
 				pendingBytes.addAndGet(-request.size());
 			}
 			if (!completed.isSuccess()) {
@@ -277,12 +277,12 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 				closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", completed.cause()));
 				return;
 			}
-			if (request.kind() == Kind.DATA) {
+			if (request.kind() == TransportFrame.Type.DATA) {
 				long total = sentBytes.addAndGet(request.size());
 				DebugLog.log("SERVER", debugId, "write complete bytes=%d totalSent=%d pending=%d writable=%s", request.size(), total, pendingBytes.get(), channel.isWritable());
 			} else {
 				try {
-					TransportHandoff.Transition transition = handoff.onLocalControlSent(toFrameType(request.kind()));
+					TransportHandoff.Transition transition = handoff.onLocalControlSent(request.kind());
 					applyTransition(transition);
 					completeTransition(transition);
 				} catch (IllegalStateException exception) {
@@ -298,7 +298,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 
 	private void applyTransition(TransportHandoff.Transition transition) {
 		for (TransportFrame.Type type : transition.outbound()) {
-			writes.addLast(new OutboundRequest(null, 0, new CompletableFuture<>(), false, fromFrameType(type)));
+			writes.addLast(new OutboundRequest(null, 0, new CompletableFuture<>(), false, type));
 		}
 		if (transition.activatesRaw()) {
 			encryption.activateRaw();
@@ -315,24 +315,6 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 			CompletableFuture<Void> result = commitResult.get();
 			if (result != null) result.complete(null);
 		}
-	}
-
-	private static TransportFrame.Type toFrameType(Kind kind) {
-		return switch (kind) {
-			case READY -> TransportFrame.Type.READY;
-			case ACK -> TransportFrame.Type.ACK;
-			case COMMIT -> TransportFrame.Type.COMMIT;
-			case DATA -> throw new IllegalArgumentException("DATA is not a handoff control frame");
-		};
-	}
-
-	private static Kind fromFrameType(TransportFrame.Type type) {
-		return switch (type) {
-			case READY -> Kind.READY;
-			case ACK -> Kind.ACK;
-			case COMMIT -> Kind.COMMIT;
-			case DATA -> throw new IllegalArgumentException("DATA is not a handoff control frame");
-		};
 	}
 
 	private boolean reserve(int bytes) {
@@ -448,7 +430,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 	private void failQueued(HolepunchFailure failure) {
 		OutboundRequest request;
 		while ((request = writes.pollFirst()) != null) {
-			if (request.kind() == Kind.DATA) {
+			if (request.kind() == TransportFrame.Type.DATA) {
 				pendingBytes.addAndGet(-request.size());
 			}
 			request.result().completeExceptionally(failure);
@@ -530,14 +512,7 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 				channel.bytesBeforeUnwritable(), channel.pipeline().names());
 	}
 
-	private enum Kind {
-		DATA,
-		READY,
-		ACK,
-		COMMIT
-	}
-
-	private record OutboundRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean rawEra, Kind kind) {}
+	private record OutboundRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean rawEra, TransportFrame.Type kind) {}
 
 	private record PendingRead(ByteBuffer data, boolean rawEra) {}
 

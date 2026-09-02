@@ -181,7 +181,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport upgrade in progress", null));
 			} else {
 				boolean rawEra = handoff.isRaw();
-				writes.add(new WriteRequest(copy, size, result, rawEra, Kind.DATA));
+				writes.add(new WriteRequest(copy, size, result, rawEra, TransportFrame.Type.DATA));
 				DebugLog.log("CLIENT", debugId, "write queued queueDepth=%d pending=%d rawEra=%s", writes.size(), pendingBytes.get(), rawEra);
 				writes.notifyAll();
 			}
@@ -262,7 +262,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 					return;
 				}
 				try {
-					ByteBuffer frame = write.kind() == Kind.DATA && write.rawEra() ? write.data().duplicate() : switch (write.kind()) {
+					ByteBuffer frame = write.kind() == TransportFrame.Type.DATA && write.rawEra() ? write.data().duplicate() : switch (write.kind()) {
 						case DATA -> TransportFrameCodec.data(write.data());
 						case READY -> TransportFrameCodec.ready();
 						case ACK -> TransportFrameCodec.ack();
@@ -274,16 +274,16 @@ final class NioHolepunchConnection implements HolepunchConnection {
 					encryptedOutput.flip();
 					DebugLog.log("CLIENT", debugId, "writer sending kind=%s plaintext=%d wire=%d rawEra=%s", write.kind(), frame.limit(), encryptedBytes, write.rawEra());
 					ClientNegotiation.writeFully(channel, encryptedOutput);
-					if (write.kind() == Kind.DATA) {
+					if (write.kind() == TransportFrame.Type.DATA) {
 						long total = sentBytes.addAndGet(write.size());
 						long pending = pendingBytes.addAndGet(-write.size());
 						DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d pending=%d", write.size(), total, pending);
 					}
 					TransportHandoff.Transition transition = null;
-					if (write.kind() != Kind.DATA) {
+					if (write.kind() != TransportFrame.Type.DATA) {
 						synchronized (writes) {
 							try {
-								transition = handoff.onLocalControlSent(toFrameType(write.kind()));
+								transition = handoff.onLocalControlSent(write.kind());
 								applyTransition(transition);
 							} catch (IllegalStateException exception) {
 								throw new IOException("invalid local transport handoff control " + write.kind(), exception);
@@ -293,7 +293,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 					}
 					write.result().complete(null);
 				} catch (Throwable throwable) {
-					if (write.kind() == Kind.DATA) {
+					if (write.kind() == TransportFrame.Type.DATA) {
 						pendingBytes.addAndGet(-write.size());
 					}
 					write.result().completeExceptionally(throwable);
@@ -449,7 +449,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private void applyTransition(TransportHandoff.Transition transition) {
 		for (TransportFrame.Type type : transition.outbound()) {
-			writes.add(new WriteRequest(null, 0, new CompletableFuture<>(), false, fromFrameType(type)));
+			writes.add(new WriteRequest(null, 0, new CompletableFuture<>(), false, type));
 		}
 		if (!transition.outbound().isEmpty()) {
 			writes.notifyAll();
@@ -468,24 +468,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (transition.committed() && commitResult != null) {
 			commitResult.complete(null);
 		}
-	}
-
-	private static TransportFrame.Type toFrameType(Kind kind) {
-		return switch (kind) {
-			case READY -> TransportFrame.Type.READY;
-			case ACK -> TransportFrame.Type.ACK;
-			case COMMIT -> TransportFrame.Type.COMMIT;
-			case DATA -> throw new IllegalArgumentException("DATA is not a handoff control frame");
-		};
-	}
-
-	private static Kind fromFrameType(TransportFrame.Type type) {
-		return switch (type) {
-			case READY -> Kind.READY;
-			case ACK -> Kind.ACK;
-			case COMMIT -> Kind.COMMIT;
-			case DATA -> throw new IllegalArgumentException("DATA is not a handoff control frame");
-		};
 	}
 
 	@Override
@@ -511,7 +493,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		synchronized (writes) {
 			WriteRequest write;
 			while ((write = writes.poll()) != null) {
-				if (write.kind() == Kind.DATA) {
+				if (write.kind() == TransportFrame.Type.DATA) {
 					pendingBytes.addAndGet(-write.size());
 				}
 				write.result().completeExceptionally(failure);
@@ -552,12 +534,5 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		}
 	}
 
-	private enum Kind {
-		DATA,
-		READY,
-		ACK,
-		COMMIT
-	}
-
-	private record WriteRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean rawEra, Kind kind) {}
+	private record WriteRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean rawEra, TransportFrame.Type kind) {}
 }

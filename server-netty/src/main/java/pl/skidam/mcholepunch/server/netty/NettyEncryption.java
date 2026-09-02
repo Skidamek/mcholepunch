@@ -22,6 +22,10 @@ public final class NettyEncryption {
 		update(encryption, true, input, output);
 	}
 
+	public TransportEncryption transport() {
+		return encryption;
+	}
+
 	public boolean isRaw() {
 		return encryption.isRaw();
 	}

@@ -32,6 +32,7 @@ import pl.skidam.mcholepunch.internal.protocol.MinecraftFrameReader;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrameCodec;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrameReader;
+import pl.skidam.mcholepunch.internal.transport.TransportFeed;
 import pl.skidam.mcholepunch.internal.transport.TransportHandoff;
 
 final class NioHolepunchConnection implements HolepunchConnection {
@@ -43,7 +44,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private final Executor callbackExecutor;
 	private final TransportEncryption encryption;
 	private final MinecraftFrameReader frameReader;
-	private final TransportFrameReader transportReader;
+	private final TransportFeed transportFeed;
 	private final ExecutorService writerExecutor;
 	private final ExecutorService readerExecutor;
 	private final Queue<WriteRequest> writes = new ArrayDeque<>();
@@ -71,7 +72,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		this.callbackExecutor = new SerialExecutor(request.options().callbackExecutor());
 		this.encryption = new TransportEncryption(result.decryptor(), MinecraftCrypt.encryptor(result.secret()));
 		this.frameReader = result.frameReader();
-		this.transportReader = new TransportFrameReader(maximumFrameLength(request.options().maxPendingWriteBytes()));
+		this.transportFeed = new TransportFeed(encryption, new TransportFrameReader(TransportFrame.MAX_FRAME_BYTES));
 		this.writerExecutor = Executors.newSingleThreadExecutor(runnable -> daemon(runnable, "mcholepunch-writer"));
 		this.readerExecutor = Executors.newSingleThreadExecutor(runnable -> daemon(runnable, "mcholepunch-reader"));
 		this.watchdog = DebugLog.watchdog("CLIENT", debugId, this::debugState);
@@ -316,7 +317,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private void readLoop() {
 		ByteBuffer network = ByteBuffer.allocate(TRANSFER_BUFFER_SIZE);
-		ByteBuffer plaintext = ByteBuffer.allocate(TRANSFER_BUFFER_SIZE);
 		try {
 			while (!closed.get()) {
 				awaitReadsEnabled();
@@ -326,29 +326,15 @@ final class NioHolepunchConnection implements HolepunchConnection {
 					fail(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "server closed connection", null));
 					return;
 				}
-				if (count == 0) {
-					continue;
-				}
 				network.flip();
 				while (network.hasRemaining()) {
-					if (encryption.isRaw()) {
+					if (transportFeed.isRaw()) {
 						ByteBuffer raw = network.slice();
 						network.position(network.limit());
 						awaitRead(dispatchRead(raw, true));
 						continue;
 					}
-					int encryptedBytes = transportReader.maximumInputBytes(network.remaining());
-					plaintext.clear();
-					plaintext.limit(encryptedBytes);
-					ByteBuffer encrypted = network.slice();
-					encrypted.limit(encryptedBytes);
-					int plaintextBytes = encryption.decrypt(encrypted, plaintext);
-					network.position(network.position() + encryptedBytes);
-					if (plaintextBytes != encryptedBytes) {
-						throw new IOException("transport cipher changed length from " + encryptedBytes + " to " + plaintextBytes);
-					}
-					plaintext.flip();
-					processTransportPlaintext(plaintext);
+					processTransportPlaintext(network);
 				}
 			}
 		} catch (Throwable throwable) {
@@ -356,9 +342,9 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		}
 	}
 
-	private void processTransportPlaintext(ByteBuffer plaintext) throws IOException {
+	private void processTransportPlaintext(ByteBuffer encryptedInput) throws IOException {
 		CompletionStage<Void> delivered = null;
-		List<TransportFrame> frames = transportReader.feed(plaintext);
+		List<TransportFrame> frames = transportFeed.feed(encryptedInput);
 		for (TransportFrame frame : frames) {
 			switch (frame.type()) {
 				case DATA -> delivered = handleData(frame.payload());
@@ -564,10 +550,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (encryptedOutput.capacity() < requiredBytes) {
 			encryptedOutput = ByteBuffer.allocate(requiredBytes);
 		}
-	}
-
-	private static int maximumFrameLength(long maximumPendingBytes) {
-		return Math.toIntExact(Math.min(Integer.MAX_VALUE, maximumPendingBytes));
 	}
 
 	private enum Kind {

@@ -8,6 +8,7 @@ import io.netty.channel.*;
 import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.mcholepunch.HolepunchFailure;
+import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 
 public final class NettyTakeover {
 	private NettyTakeover() {}
@@ -56,7 +57,7 @@ public final class NettyTakeover {
 			try {
 				ChannelPipeline pipeline = channel.pipeline();
 				if (connection.encryption() != null && pipeline.get(spec.cipherDecoderName()) != null) {
-					pipeline.replace(spec.cipherDecoderName(), spec.cipherDecoderName(), new NettyTransportDecoder(connection.encryption(), connection, connection.maximumFrameLength()));
+					pipeline.replace(spec.cipherDecoderName(), spec.cipherDecoderName(), new NettyTransportDecoder(connection.encryption(), connection, TransportFrame.MAX_FRAME_BYTES));
 				}
 				if (pipeline.get(spec.rawInboundName()) == null) {
 					pipeline.addAfter(spec.inboundEncryptionAnchor(), spec.rawInboundName(), new NettyHolepunchConnection.RawInboundHandler(connection));

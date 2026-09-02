@@ -87,10 +87,6 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 		return encryption;
 	}
 
-	int maximumFrameLength() {
-		return Math.toIntExact(Math.min(Integer.MAX_VALUE, maximumPendingBytes));
-	}
-
 	public void open() {
 		callbackExecutor.execute(() -> {
 			try {

@@ -1,0 +1,119 @@
+package pl.skidam.mcholepunch.internal;
+
+import java.nio.ByteBuffer;
+import java.time.Duration;
+import java.util.Locale;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
+
+/** Opt-in transport tracing used to diagnose holepunch connections. */
+public final class DebugLog {
+	private static final int PREVIEW_BYTES = Math.max(0, Integer.getInteger("mcholepunch.debug.previewBytes", 16));
+	private static final long START_NANOS = System.nanoTime();
+	private static final AtomicLong NEXT_ID = new AtomicLong();
+	private static final ScheduledExecutorService WATCHDOG = Executors.newSingleThreadScheduledExecutor(runnable -> {
+		Thread thread = new Thread(runnable, "mcholepunch-debug-watchdog");
+		thread.setDaemon(true);
+		return thread;
+	});
+
+	private DebugLog() {}
+
+	public static boolean enabled() {
+		return Boolean.parseBoolean(System.getProperty("mcholepunch.debug", "false"));
+	}
+
+	public static long nextConnectionId() {
+		return NEXT_ID.incrementAndGet();
+	}
+
+	public static void log(String side, long connectionId, String message, Object... arguments) {
+		if (!enabled()) {
+			return;
+		}
+		String rendered;
+		try {
+			rendered = arguments.length == 0 ? message : String.format(Locale.ROOT, message, arguments);
+		} catch (Throwable formattingFailure) {
+			rendered = message + " [formatting failed: " + formattingFailure + "]";
+		}
+		long elapsedMillis = Duration.ofNanos(System.nanoTime() - START_NANOS).toMillis();
+		System.err.printf(Locale.ROOT, "[mcholepunch-debug][+%dms][%s][%s-%d] %s%n", elapsedMillis, Thread.currentThread().getName(), side, connectionId, rendered);
+	}
+
+	public static void failure(String side, long connectionId, String message, Throwable throwable) {
+		if (!enabled()) {
+			return;
+		}
+		log(side, connectionId, "%s: %s", message, throwable);
+		if (throwable != null) {
+			throwable.printStackTrace(System.err);
+		}
+	}
+
+	public static ScheduledFuture<?> watchdog(String side, long connectionId, Supplier<String> state) {
+		if (!enabled()) {
+			return null;
+		}
+		long seconds = Math.max(1L, Long.getLong("mcholepunch.debug.watchdogSeconds", 5L));
+		return WATCHDOG.scheduleAtFixedRate(() -> {
+			try {
+				log(side, connectionId, "WATCHDOG %s", state.get());
+			} catch (Throwable throwable) {
+				failure(side, connectionId, "watchdog failed", throwable);
+			}
+		}, seconds, seconds, TimeUnit.SECONDS);
+	}
+
+	public static void cancel(ScheduledFuture<?> future) {
+		if (future != null) {
+			future.cancel(false);
+		}
+	}
+
+	public static String preview(ByteBuffer source) {
+		if (!enabled()) {
+			return "";
+		}
+		ByteBuffer copy = source.duplicate();
+		int total = copy.remaining();
+		int length = Math.min(total, PREVIEW_BYTES);
+		byte[] bytes = new byte[length];
+		copy.get(bytes);
+		return preview(bytes, total);
+	}
+
+	public static String preview(byte[] bytes) {
+		if (!enabled()) {
+			return "";
+		}
+		return preview(bytes, bytes.length);
+	}
+
+	private static String preview(byte[] bytes, int totalLength) {
+		if (PREVIEW_BYTES == 0 || bytes.length == 0) {
+			return "len=" + totalLength;
+		}
+		int length = Math.min(bytes.length, PREVIEW_BYTES);
+		StringBuilder result = new StringBuilder(16 + length * 3);
+		result.append("len=").append(totalLength).append(" hex=");
+		for (int index = 0; index < length; index++) {
+			if (index != 0) {
+				result.append(' ');
+			}
+			int value = bytes[index] & 0xff;
+			if (value < 16) {
+				result.append('0');
+			}
+			result.append(Integer.toHexString(value));
+		}
+		if (length < totalLength) {
+			result.append(" …");
+		}
+		return result.toString();
+	}
+}

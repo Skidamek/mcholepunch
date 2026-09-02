@@ -1,0 +1,14 @@
+[versions]
+spotless = "8.8.0"
+netty = "4.1.121.Final"
+junit = "5.12.2"
+
+[libraries]
+netty-all = { module = "io.netty:netty-all", version.ref = "netty" }
+junit-bom = { module = "org.junit:junit-bom", version.ref = "junit" }
+junit-jupiter-api = { module = "org.junit.jupiter:junit-jupiter-api" }
+junit-jupiter-engine = { module = "org.junit.jupiter:junit-jupiter-engine" }
+junit-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
+
+[plugins]
+spotless = { id = "com.diffplug.spotless", version.ref = "spotless" }

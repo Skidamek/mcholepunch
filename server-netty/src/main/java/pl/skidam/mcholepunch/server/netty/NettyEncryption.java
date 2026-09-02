@@ -1,0 +1,70 @@
+package pl.skidam.mcholepunch.server.netty;
+
+import java.nio.ByteBuffer;
+import java.security.GeneralSecurityException;
+
+import io.netty.buffer.ByteBuf;
+
+import pl.skidam.mcholepunch.internal.crypto.CipherStreamState;
+import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
+import pl.skidam.mcholepunch.internal.crypto.TransportEncryption;
+
+public final class NettyEncryption {
+	private final TransportEncryption encryption;
+
+	public NettyEncryption(byte[] secret) throws GeneralSecurityException {
+		CipherStreamState decryptor = MinecraftCrypt.decryptor(secret);
+		CipherStreamState encryptor = MinecraftCrypt.encryptor(secret);
+		encryption = new TransportEncryption(secret, decryptor, encryptor);
+	}
+
+	public byte[] decrypt(byte[] bytes) {
+		return encryption.decrypt(bytes);
+	}
+
+	public byte[] encrypt(byte[] bytes) {
+		return encryption.encrypt(bytes);
+	}
+
+	public void decrypt(ByteBuf input, ByteBuf output) {
+		update(encryption, false, input, output);
+	}
+
+	public void encrypt(ByteBuf input, ByteBuf output) {
+		update(encryption, true, input, output);
+	}
+
+	public boolean isRaw() {
+		return encryption.isRaw();
+	}
+
+	public void activateRaw() {
+		encryption.activateRaw();
+	}
+
+	private static void update(TransportEncryption encryption, boolean encrypt, ByteBuf input, ByteBuf output) {
+		int readableBytes = input.readableBytes();
+		if (readableBytes == 0) {
+			return;
+		}
+		output.ensureWritable(readableBytes);
+		int writerIndex = output.writerIndex();
+		if (input.nioBufferCount() == 1) {
+			writerIndex += update(encryption, encrypt, input.nioBuffer(input.readerIndex(), readableBytes), output.nioBuffer(writerIndex, readableBytes), readableBytes);
+		} else {
+			for (ByteBuffer source : input.nioBuffers(input.readerIndex(), readableBytes)) {
+				int sourceBytes = source.remaining();
+				writerIndex += update(encryption, encrypt, source, output.nioBuffer(writerIndex, sourceBytes), sourceBytes);
+			}
+		}
+		output.writerIndex(writerIndex);
+	}
+
+	private static int update(TransportEncryption encryption, boolean encrypt, ByteBuffer input, ByteBuffer output, int expectedBytes) {
+		int written = encrypt ? encryption.encrypt(input, output) : encryption.decrypt(input, output);
+		if (written != expectedBytes) {
+			throw new IllegalStateException("transport cipher changed length from " + expectedBytes + " to " + written);
+		}
+		return written;
+	}
+}

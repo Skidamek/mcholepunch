@@ -44,6 +44,11 @@ class TransportFrameReaderTest {
 	}
 
 	@Test
+	void rejectsEmptyDataFrames() {
+		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, 0})));
+	}
+
+	@Test
 	void rejectsMalformedLengthVarInts() {
 		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0x10})));
 		assertThrows(IOException.class, () -> new TransportFrameReader(1024).feed(ByteBuffer.wrap(new byte[]{0, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, (byte) 0x80, 0})));

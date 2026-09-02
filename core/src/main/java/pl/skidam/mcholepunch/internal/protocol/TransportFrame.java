@@ -16,9 +16,29 @@ public record TransportFrame(Type type, byte[] payload) {
 	}
 
 	public enum Type {
-		DATA,
-		READY,
-		ACK,
-		COMMIT
+		DATA((byte) 0),
+		READY((byte) 1),
+		ACK((byte) 2),
+		COMMIT((byte) 3);
+
+		private final byte wire;
+
+		Type(byte wire) {
+			this.wire = wire;
+		}
+
+		public byte wire() {
+			return wire;
+		}
+
+		/** Returns the type carrying the given wire byte, or null when no type does. */
+		public static Type of(int wire) {
+			for (Type type : values()) {
+				if (type.wire == wire) {
+					return type;
+				}
+			}
+			return null;
+		}
 	}
 }

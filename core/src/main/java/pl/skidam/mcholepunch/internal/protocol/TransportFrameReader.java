@@ -55,13 +55,10 @@ public final class TransportFrameReader {
 	}
 
 	private void readType(int value) throws IOException {
-		type = switch (value) {
-			case 0 -> TransportFrame.Type.DATA;
-			case 1 -> TransportFrame.Type.READY;
-			case 2 -> TransportFrame.Type.ACK;
-			case 3 -> TransportFrame.Type.COMMIT;
-			default -> throw new IOException("unknown mcholepunch transport frame type: " + value);
-		};
+		type = TransportFrame.Type.of(value);
+		if (type == null) {
+			throw new IOException("unknown mcholepunch transport frame type: " + value);
+		}
 		lengthReader.reset();
 		stage = Stage.LENGTH;
 	}
@@ -74,6 +71,9 @@ public final class TransportFrameReader {
 			throw new IOException("transport control frame must not have a payload");
 		}
 		if (length == 0) {
+			if (type == TransportFrame.Type.DATA) {
+				throw new IOException("transport data frame must not be empty");
+			}
 			payload = new byte[0];
 			stage = Stage.TYPE;
 			TransportFrame frame = new TransportFrame(type, payload);

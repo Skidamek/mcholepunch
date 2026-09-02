@@ -8,25 +8,25 @@ public final class TransportFrameCodec {
 	public static ByteBuffer data(ByteBuffer payload) {
 		ByteBuffer input = payload.duplicate();
 		ByteBuffer frame = ByteBuffer.allocate(1 + VarInts.encodedLength(input.remaining()) + input.remaining());
-		frame.put((byte) 0);
+		frame.put(TransportFrame.Type.DATA.wire());
 		VarInts.write(frame, input.remaining());
 		frame.put(input);
 		return frame.flip();
 	}
 
 	public static ByteBuffer ready() {
-		return control((byte) 1);
+		return control(TransportFrame.Type.READY);
 	}
 
 	public static ByteBuffer ack() {
-		return control((byte) 2);
+		return control(TransportFrame.Type.ACK);
 	}
 
 	public static ByteBuffer commit() {
-		return control((byte) 3);
+		return control(TransportFrame.Type.COMMIT);
 	}
 
-	private static ByteBuffer control(byte type) {
-		return ByteBuffer.wrap(new byte[]{type, 0});
+	private static ByteBuffer control(TransportFrame.Type type) {
+		return ByteBuffer.wrap(new byte[]{type.wire(), 0});
 	}
 }

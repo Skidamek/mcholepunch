@@ -57,8 +57,9 @@ guaranteed to have open. It layers its own TLS on top with the transport handoff
    client answers with a fresh AES secret sealed to the server's RSA public key, and both sides
    switch to AES/CFB8.
 5. The server sends an encrypted Custom Query (packet 4), `mcholepunch:takeover`, strips the
-   vanilla handlers listed in `NettyTakeoverSpec.minecraftLogin()`, and from that point the
-   connection delivers `ByteBuffer`s to the registered `HolepunchHandler`.
+   vanilla handlers listed in `NettyTakeoverSpec.minecraftLogin()`, and switches the connection to
+   mcholepunch's own transport. The client switches when it receives the query; from that point
+   both ends deliver `ByteBuffer`s to the registered `HolepunchHandler`.
 
 ### The marker
 
@@ -71,6 +72,11 @@ UUID passes with probability 2^-96; a real account UUID never does.
 
 ### The transport handoff
 
+The handoff is optional. A connection that never calls `commitTransportUpgrade()` keeps the
+vanilla AES/CFB8 transport for its whole life: `onRead` and `write` keep working, nothing times
+out, and the vanilla AES does all of the encryption work. It is a supported resting state, not a
+phase you must pass through.
+
 An application that wants to change the wire format midstream (AutoModpack inserts TLS) must not
 race its own bytes into the old format. `commitTransportUpgrade()` exchanges an encrypted COMMIT
 control frame in each direction, and both endpoints flip to the raw stream at the same stream
@@ -79,6 +85,17 @@ peer's `onRead`; writes submitted while the commit is in flight fail, so an appl
 own output across the flip; writes after it travel the raw stream and surface in `onRawRead`.
 Past the flip, mcholepunch does not interpret the bytes and does not authenticate the peer; the
 stream is yours.
+
+### Talking to a server without mcholepunch
+
+The client expects the world it dials to speak the dialect above, and fails fast when it does
+not. A vanilla server in online mode sends an Encryption Request with `shouldAuthenticate=true`;
+mcholepunch never fakes Mojang authentication, so the connect future fails with
+`AUTHENTICATION_REQUESTED`. A vanilla server in offline mode sends some other dialect instead
+(Set Compression, Login Plugin Requests, Login Success), which surfaces as `UNEXPECTED_PACKET`.
+A silent or filtered peer ends in `TIMEOUT` after the negotiation timeout. In every case the
+connect future completes exceptionally and the socket closes; nothing hangs and nothing is sent
+beyond the two vanilla-shaped login packets.
 
 ## Modules
 

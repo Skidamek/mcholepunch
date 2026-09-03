@@ -27,6 +27,14 @@ public interface HolepunchConnection extends AutoCloseable {
 	CompletionStage<Void> commitTransportUpgrade();
 
 	/**
+	 * The negotiated transport keying material, 16 bytes, identical on both endpoints. A layered
+	 * protocol can derive its own keys from it, for example to encrypt a wire-format transition,
+	 * while the connection is still open. Treat the value as sensitive and never log or persist it;
+	 * the returned array is a copy.
+	 */
+	byte[] transportSecret();
+
+	/**
 	 * Stops future application-byte callbacks. At most the callback already in progress can finish
 	 * after this method returns. The operation is idempotent and does not close the connection.
 	 */

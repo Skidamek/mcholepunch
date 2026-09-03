@@ -176,6 +176,14 @@ public final class NettyHolepunchConnection implements HolepunchConnection {
 	}
 
 	@Override
+	public byte[] transportSecret() {
+		if (encryption == null) {
+			throw new IllegalStateException("transport encryption is not installed");
+		}
+		return encryption.transportSecret();
+	}
+
+	@Override
 	public void pauseReads() {
 		executeOnEventLoop(() -> {
 			applicationReadsPaused = true;

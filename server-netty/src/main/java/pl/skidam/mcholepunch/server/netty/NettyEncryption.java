@@ -9,9 +9,11 @@ import pl.skidam.mcholepunch.internal.crypto.TransportEncryption;
 
 public final class NettyEncryption {
 	private final TransportEncryption encryption;
+	private final byte[] transportSecret;
 
 	public NettyEncryption(byte[] secret) throws GeneralSecurityException {
 		encryption = TransportEncryption.server(secret);
+		transportSecret = secret.clone();
 	}
 
 	public void decrypt(ByteBuf input, ByteBuf output) {
@@ -24,6 +26,10 @@ public final class NettyEncryption {
 
 	public TransportEncryption transport() {
 		return encryption;
+	}
+
+	public byte[] transportSecret() {
+		return transportSecret.clone();
 	}
 
 	public boolean isRaw() {

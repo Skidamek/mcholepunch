@@ -91,6 +91,7 @@ class NioHolepunchConnectionEndToEndTest {
 			});
 
 			HolepunchConnection connection = client.connect(request, route).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			assertEquals(16, connection.transportSecret().length, "the negotiated transport secret must reach the application");
 
 			server.writeTransportData(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)));
 			assertTrue(readLatch.await(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));

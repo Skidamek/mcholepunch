@@ -45,6 +45,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private final HolepunchHandler handler;
 	private final HolepunchRequest request;
 	private final Executor callbackExecutor;
+	private final byte[] transportSecret;
 	private final TransportEncryption encryption;
 	private final MinecraftFrameReader frameReader;
 	private final TransportFeed transportFeed;
@@ -70,6 +71,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		this.debugId = debugId;
 		this.channel = channel;
 		this.handler = request.handler();
+		this.transportSecret = result.secret();
 		this.request = request;
 		this.callbackExecutor = new SerialExecutor(request.options().callbackExecutor());
 		this.encryption = new TransportEncryption(result.decryptor(), MinecraftCrypt.encryptor(result.secret()));
@@ -400,6 +402,11 @@ final class NioHolepunchConnection implements HolepunchConnection {
 			}
 			throw new IOException("read callback failed", cause);
 		}
+	}
+
+	@Override
+	public byte[] transportSecret() {
+		return transportSecret.clone();
 	}
 
 	@Override

@@ -99,7 +99,7 @@ beyond the two vanilla-shaped login packets.
 
 ## Modules
 
-| | |
+| Module | Description |
 |---|---|
 | `:core` | The login codec (`LoginCodec`), the marker, the NIO client and its negotiation, the vanilla-style crypto, SRV resolution, the transport handoff, and `HolepunchServerRegistry`. No Netty. |
 | `:server-netty` | The Netty server side: `NettyLoginClaimHandler`, the login negotiator, cipher handlers, the takeover that strips vanilla handlers, and the raw connection plumbing. Depends on Netty 4.1 and `:core`. |

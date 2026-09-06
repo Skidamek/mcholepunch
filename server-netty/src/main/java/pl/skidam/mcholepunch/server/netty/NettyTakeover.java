@@ -64,9 +64,11 @@ public final class NettyTakeover {
 				if (connection.encryption() != null && pipeline.get(spec.cipherDecoderName()) != null) {
 					pipeline.replace(spec.cipherDecoderName(), spec.cipherDecoderName(), new NettyTransportDecoder(connection.encryption(), connection, TransportFrame.MAX_FRAME_BYTES));
 				}
+				// Outbound traversal runs tail-ward-to-head, so the framer must sit closer to the
+				// tail than the cipher encoder: frames are written first, then encrypted.
 				if (pipeline.get(NettyHolepunchConnection.HANDLER_NAME) == null) {
 					if (pipeline.get(spec.cipherEncoderName()) != null) {
-						pipeline.addBefore(spec.cipherEncoderName(), NettyHolepunchConnection.HANDLER_NAME, connection);
+						pipeline.addAfter(spec.cipherEncoderName(), NettyHolepunchConnection.HANDLER_NAME, connection);
 					} else {
 						pipeline.addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
 					}

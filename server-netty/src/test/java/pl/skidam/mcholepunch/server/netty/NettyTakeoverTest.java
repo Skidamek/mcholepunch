@@ -84,6 +84,9 @@ class NettyTakeoverTest {
 		assertNull(channel.pipeline().get("unbundler"));
 		assertNull(channel.pipeline().get("bundler"));
 		assertNotNull(channel.pipeline().get("mcholepunch-raw-outbound"));
+		List<String> names = channel.pipeline().names();
+		assertTrue(names.indexOf(spec.cipherEncoderName()) < names.indexOf(NettyHolepunchConnection.HANDLER_NAME),
+				"the framer must sit tail-ward of the cipher encoder so frames are written before encryption");
 		channel.writeAndFlush(new Object()).syncUninterruptibly();
 		assertTrue(channel.isOpen());
 		channel.finishAndReleaseAll();

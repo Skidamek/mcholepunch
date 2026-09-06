@@ -51,10 +51,10 @@ public final class NettyTakeover {
 	}
 
 	/**
-	 * Installs the mcholepunch transport handlers on the taken-over channel. Vanilla handlers are
-	 * left in place; {@link #stripVanilla} removes them only after the application installed its
-	 * own inbound chain, so bytes buffered behind Minecraft framing flush into the application
-	 * pipeline instead of a not-yet-installed one.
+	 * Installs the mcholepunch transport handlers on the taken-over channel and strips the vanilla
+	 * handlers the takeover displaced. Stripping happens here and not later: the client may speak
+	 * transport data as soon as it sees the takeover query, so the application pipeline must be
+	 * installed on a channel that is already transport-only.
 	 */
 	public static CompletableFuture<Void> activate(Channel channel, NettyTakeoverSpec spec, NettyHolepunchConnection connection) {
 		CompletableFuture<Void> result = new CompletableFuture<>();
@@ -71,9 +71,6 @@ public final class NettyTakeover {
 						pipeline.addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
 					}
 				}
-				if (pipeline.get(spec.inboundWatchdogName()) == null) {
-					pipeline.addLast(spec.inboundWatchdogName(), new NettyHolepunchConnection.InboundWatchdog(connection));
-				}
 				if (pipeline.get(spec.rawOutboundName()) == null) {
 					if (pipeline.get(spec.cipherEncoderName()) != null) {
 						pipeline.addAfter(spec.cipherEncoderName(), spec.rawOutboundName(), new PassThroughOutboundHandler());
@@ -81,6 +78,16 @@ public final class NettyTakeover {
 						pipeline.addLast(spec.rawOutboundName(), new PassThroughOutboundHandler());
 					}
 				}
+				if (pipeline.get(spec.inboundWatchdogName()) == null) {
+					pipeline.addLast(spec.inboundWatchdogName(), new NettyHolepunchConnection.InboundWatchdog(connection));
+				}
+				removeIfPresent(pipeline, spec, spec.negotiatorName());
+				for (String name : spec.removalNames()) {
+					if (!name.equals(spec.inboundEncryptionAnchor())) {
+						removeIfPresent(pipeline, spec, name);
+					}
+				}
+				removeIfPresent(pipeline, spec, spec.inboundEncryptionAnchor());
 				result.complete(null);
 			} catch (Throwable throwable) {
 				result.completeExceptionally(throwable);
@@ -92,25 +99,6 @@ public final class NettyTakeover {
 			channel.eventLoop().execute(activation);
 		}
 		return result;
-	}
-
-	/** Removes the vanilla handlers the takeover displaced. Their buffered inbound bytes flush into the installed application pipeline. */
-	public static void stripVanilla(Channel channel, NettyTakeoverSpec spec) {
-		Runnable strip = () -> {
-			ChannelPipeline pipeline = channel.pipeline();
-			removeIfPresent(pipeline, spec, spec.negotiatorName());
-			for (String name : spec.removalNames()) {
-				if (!name.equals(spec.inboundEncryptionAnchor())) {
-					removeIfPresent(pipeline, spec, name);
-				}
-			}
-			removeIfPresent(pipeline, spec, spec.inboundEncryptionAnchor());
-		};
-		if (channel.eventLoop().inEventLoop()) {
-			strip.run();
-		} else {
-			channel.eventLoop().execute(strip);
-		}
 	}
 
 	private static void removeIfPresent(ChannelPipeline pipeline, NettyTakeoverSpec spec, String name) {

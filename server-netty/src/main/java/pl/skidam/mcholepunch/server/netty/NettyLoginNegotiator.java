@@ -128,24 +128,20 @@ public final class NettyLoginNegotiator {
 					state = State.CLOSED;
 					return;
 				}
-				if (installApplication()) {
-					NettyTakeover.stripVanilla(channel, takeoverSpec);
-					state = State.OPEN;
-				}
+				installApplication();
 			}));
 		} catch (Throwable throwable) {
 			fail(HolepunchFailure.Kind.IO, "unable to activate holepunch connection", throwable);
 		}
 	}
 
-	private boolean installApplication() {
+	private void installApplication() {
 		try {
 			registration.application().install(channel, connection);
+			state = State.OPEN;
 			DebugLog.log("SERVER", connection.debugId(), "application installed pipeline=%s", channel.pipeline().names());
-			return true;
 		} catch (Throwable throwable) {
 			fail(HolepunchFailure.Kind.IO, "unable to install the holepunch application", unwrap(throwable));
-			return false;
 		}
 	}
 

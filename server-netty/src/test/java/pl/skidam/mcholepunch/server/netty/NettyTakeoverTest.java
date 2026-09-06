@@ -40,10 +40,11 @@ class NettyTakeoverTest {
 		byte[] applicationBytes = {1, 2, 3, 4};
 		channel.writeInbound(Unpooled.wrappedBuffer(applicationBytes));
 		NettyTakeover.activate(channel, spec, connection).join();
-		channel.pipeline().addLast("application", new CollectingHandler(received));
-		NettyTakeover.stripVanilla(channel, spec);
 
-		assertArrayEquals(applicationBytes, received.get(0));
+		assertNull(channel.pipeline().get("splitter"));
+		assertNotNull(channel.pipeline().get(NettyHolepunchConnection.HANDLER_NAME));
+		assertNotNull(channel.pipeline().get(spec.inboundWatchdogName()));
+		assertTrue(received.isEmpty(), "bytes buffered behind vanilla framing before the takeover are discarded");
 		channel.finishAndReleaseAll();
 	}
 
@@ -66,9 +67,6 @@ class NettyTakeoverTest {
 		assertTrue(takeover.isDone());
 		assertNotNull(channel.pipeline().get(spec.inboundWatchdogName()));
 		assertNotNull(channel.pipeline().get(NettyHolepunchConnection.HANDLER_NAME));
-		assertNotNull(channel.pipeline().get("splitter"));
-
-		NettyTakeover.stripVanilla(channel, spec);
 		assertNull(channel.pipeline().get("splitter"));
 		channel.finishAndReleaseAll();
 	}
@@ -82,8 +80,6 @@ class NettyTakeoverTest {
 		NettyTakeoverSpec spec = NettyTakeoverSpec.minecraftLogin();
 
 		NettyTakeover.activate(channel, spec, connection).join();
-		channel.pipeline().addLast("application", new ChannelInboundHandlerAdapter());
-		NettyTakeover.stripVanilla(channel, spec);
 
 		assertNull(channel.pipeline().get("unbundler"));
 		assertNull(channel.pipeline().get("bundler"));

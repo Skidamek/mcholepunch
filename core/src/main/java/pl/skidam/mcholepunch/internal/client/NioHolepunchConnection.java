@@ -49,10 +49,8 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private final TransportEncryption encryption;
 	private final MinecraftFrameReader frameReader;
 	private final TransportFeed transportFeed;
-	private final ExecutorService writerExecutor;
 	private final ExecutorService readerExecutor;
-	private final Queue<WriteRequest> writes = new ArrayDeque<>();
-	private final AtomicLong pendingBytes = new AtomicLong();
+	private final Object writeLock = new Object();
 	private final AtomicBoolean closed = new AtomicBoolean();
 	private final AtomicBoolean openSucceeded = new AtomicBoolean();
 	private final AtomicLong receivedBytes = new AtomicLong();
@@ -77,7 +75,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		this.encryption = new TransportEncryption(result.decryptor(), MinecraftCrypt.encryptor(result.secret()));
 		this.frameReader = result.frameReader();
 		this.transportFeed = new TransportFeed(encryption, new TransportFrameReader(TransportFrame.MAX_FRAME_BYTES));
-		this.writerExecutor = Executors.newSingleThreadExecutor(runnable -> daemon(runnable, "mcholepunch-writer"));
 		this.readerExecutor = Executors.newSingleThreadExecutor(runnable -> daemon(runnable, "mcholepunch-reader"));
 		this.watchdog = DebugLog.watchdog("CLIENT", debugId, this::debugState);
 	}
@@ -91,7 +88,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		DebugLog.log("CLIENT", debugId, "takeover complete; switching to coordinated transport initialBytes=%d", connection.initialDataSnapshot.length);
 		connection.dispatchOpen();
 		connection.dispatchInitialData();
-		connection.writerExecutor.execute(connection::writeLoop);
 		connection.readerExecutor.execute(connection::readLoop);
 		return connection;
 	}
@@ -171,39 +167,40 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (size == 0) {
 			return CompletableFuture.completedFuture(null);
 		}
-		while (true) {
-			long current = pendingBytes.get();
-			long next = current + size;
-			if (next > request.options().maxPendingWriteBytes()) {
-				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.IO, "pending write limit exceeded", null));
-			}
-			if (pendingBytes.compareAndSet(current, next)) {
-				break;
-			}
-		}
-		CompletableFuture<Void> result = new CompletableFuture<>();
-		synchronized (writes) {
+		// The blocked caller is the write backpressure: there is no queue to overflow, so the
+		// old pending-write limit has no synchronous-era equivalent.
+		synchronized (writeLock) {
 			if (closed.get()) {
-				pendingBytes.addAndGet(-size);
-				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
-			} else if (handoff.isCommitting()) {
-				pendingBytes.addAndGet(-size);
-				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
-			} else {
-				boolean rawEra = handoff.isRaw();
-				writes.add(new WriteRequest(copy, size, result, rawEra, TransportFrame.Type.DATA));
-				DebugLog.log("CLIENT", debugId, "write queued queueDepth=%d pending=%d rawEra=%s", writes.size(), pendingBytes.get(), rawEra);
-				writes.notifyAll();
+				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+			}
+			if (handoff.isCommitting()) {
+				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
+			}
+			try {
+				sendFrame(handoff.isRaw() ? copy : TransportFrameCodec.data(copy), handoff.isRaw());
+				DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d", size, sentBytes.addAndGet(size));
+				return CompletableFuture.completedFuture(null);
+			} catch (Throwable throwable) {
+				HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", throwable);
+				fail(failure);
+				return CompletableFuture.failedFuture(failure);
 			}
 		}
-		return result;
+	}
+
+	/** Encrypts and writes one frame; the caller holds {@link #writeLock}, which confines the stateful cipher and the reuse buffer. */
+	private void sendFrame(ByteBuffer frame, boolean rawEra) throws IOException {
+		ensureEncryptedCapacity(frame.remaining());
+		encryptedOutput.clear();
+		int encryptedBytes = encryption.encrypt(frame, encryptedOutput);
+		encryptedOutput.flip();
+		DebugLog.log("CLIENT", debugId, "sending kind=DATA plaintext=%d wire=%d rawEra=%s", frame.limit(), encryptedBytes, rawEra);
+		ClientNegotiation.writeFully(channel, encryptedOutput);
 	}
 
 	@Override
 	public CompletionStage<Void> commitTransportUpgrade() {
-		TransportHandoff.Transition transition;
-		CompletableFuture<Void> result;
-		synchronized (writes) {
+		synchronized (writeLock) {
 			if (closed.get()) {
 				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
 			}
@@ -214,79 +211,43 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				return commitResult;
 			}
 			commitResult = new CompletableFuture<>();
-			result = commitResult;
-			transition = handoff.requestCommit();
-			applyTransition(transition);
+			try {
+				applyTransition(handoff.requestCommit());
+			} catch (Throwable throwable) {
+				HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.IO, "commit failed", throwable);
+				fail(failure);
+				return CompletableFuture.failedFuture(failure);
+			}
+			return commitResult;
 		}
-		completeTransition(transition);
-		return result;
 	}
 
 	private void receiveControl(TransportFrame.Type type) {
-		TransportHandoff.Transition transition;
-		synchronized (writes) {
+		synchronized (writeLock) {
 			if (closed.get() || handoff.isRaw()) {
 				return;
 			}
-			transition = handoff.onPeerControlReceived(type);
-			applyTransition(transition);
+			try {
+				// The peer's COMMIT never schedules an outbound frame; when our own is already on
+				// the wire this is the switch that activates the raw era for both directions.
+				applyTransition(handoff.onPeerControlReceived(type));
+			} catch (IOException exception) {
+				fail(new HolepunchFailure(HolepunchFailure.Kind.IO, "failed to acknowledge the transport commit", exception));
+			}
+		}
+	}
+
+	/** Applies a transition synchronously: sends its outbound controls, then their follow-ups, then flips the raw era. */
+	private void applyTransition(TransportHandoff.Transition transition) throws IOException {
+		for (TransportFrame.Type type : transition.outbound()) {
+			sendFrame(TransportFrameCodec.commit(), false);
+			applyTransition(handoff.onLocalControlSent(type));
+		}
+		if (transition.activatedRaw()) {
+			encryption.activateRaw();
+			DebugLog.log("CLIENT", debugId, "transport switched to raw pass-through");
 		}
 		completeTransition(transition);
-	}
-
-	private void writeLoop() {
-		try {
-			while (!closed.get()) {
-				WriteRequest write = takeWrite();
-				if (write == null) {
-					return;
-				}
-				try {
-					ByteBuffer frame = write.kind() == TransportFrame.Type.DATA && write.rawEra() ? write.data().duplicate() : switch (write.kind()) {
-						case DATA -> TransportFrameCodec.data(write.data());
-						case COMMIT -> TransportFrameCodec.commit();
-					};
-					ensureEncryptedCapacity(frame.remaining());
-					encryptedOutput.clear();
-					int encryptedBytes = encryption.encrypt(frame, encryptedOutput);
-					encryptedOutput.flip();
-					DebugLog.log("CLIENT", debugId, "writer sending kind=%s plaintext=%d wire=%d rawEra=%s", write.kind(), frame.limit(), encryptedBytes, write.rawEra());
-					ClientNegotiation.writeFully(channel, encryptedOutput);
-					if (write.kind() == TransportFrame.Type.DATA) {
-						long total = sentBytes.addAndGet(write.size());
-						long pending = pendingBytes.addAndGet(-write.size());
-						DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d pending=%d", write.size(), total, pending);
-					}
-					if (write.kind() != TransportFrame.Type.DATA) {
-						TransportHandoff.Transition transition;
-						synchronized (writes) {
-							transition = handoff.onLocalControlSent(write.kind());
-							applyTransition(transition);
-						}
-						completeTransition(transition);
-					}
-					write.result().complete(null);
-				} catch (Throwable throwable) {
-					if (write.kind() == TransportFrame.Type.DATA) {
-						pendingBytes.addAndGet(-write.size());
-					}
-					write.result().completeExceptionally(throwable);
-					fail(new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", throwable));
-					return;
-				}
-			}
-		} catch (InterruptedException exception) {
-			Thread.currentThread().interrupt();
-		}
-	}
-
-	private WriteRequest takeWrite() throws InterruptedException {
-		synchronized (writes) {
-			while (!closed.get() && writes.isEmpty()) {
-				writes.wait();
-			}
-			return closed.get() ? null : writes.poll();
-		}
 	}
 
 	private void readLoop() {
@@ -426,20 +387,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		}
 	}
 
-	private void applyTransition(TransportHandoff.Transition transition) {
-		for (TransportFrame.Type type : transition.outbound()) {
-			writes.add(new WriteRequest(null, 0, new CompletableFuture<>(), false, type));
-		}
-		if (!transition.outbound().isEmpty()) {
-			writes.notifyAll();
-		}
-		if (transition.activatedRaw()) {
-			encryption.activateRaw();
-			writes.notifyAll();
-			DebugLog.log("CLIENT", debugId, "transport switched to raw pass-through");
-		}
-	}
-
 	private void completeTransition(TransportHandoff.Transition transition) {
 		if (transition.activatedRaw() && commitResult != null) {
 			commitResult.complete(null);
@@ -466,35 +413,18 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		} catch (IOException exception) {
 			failure.addSuppressed(exception);
 		}
-		synchronized (writes) {
-			WriteRequest write;
-			while ((write = writes.poll()) != null) {
-				if (write.kind() == TransportFrame.Type.DATA) {
-					pendingBytes.addAndGet(-write.size());
-				}
-				write.result().completeExceptionally(failure);
-			}
-			if (commitResult != null) commitResult.completeExceptionally(failure);
-			writes.notifyAll();
-		}
-		writerExecutor.shutdownNow();
+		if (commitResult != null) commitResult.completeExceptionally(failure);
 		readerExecutor.shutdownNow();
 		callbackExecutor.execute(() -> handler.onClosed(failure));
 	}
 
 	private String debugState() {
-		int queueDepth;
-		synchronized (writes) {
-			queueDepth = writes.size();
-		}
 		boolean paused;
 		synchronized (readFlow) {
 			paused = readsPaused;
 		}
-		return String.format(Locale.ROOT, "open=%s connected=%s closed=%s openCallback=%s phase=%s raw=%s readsPaused=%s pending=%d queue=%d sent=%d received=%d " + "writerShutdown=%s readerShutdown=%s",
-				channel.isOpen(),
-				channel.isConnected(), closed.get(), openSucceeded.get(), handoff.phase(), encryption.isRaw(), paused, pendingBytes.get(), queueDepth, sentBytes.get(), receivedBytes.get(), writerExecutor.isShutdown(),
-				readerExecutor.isShutdown());
+		return String.format(Locale.ROOT, "open=%s connected=%s closed=%s openCallback=%s phase=%s raw=%s readsPaused=%s sent=%d received=%d readerShutdown=%s", channel.isOpen(), channel.isConnected(),
+				closed.get(), openSucceeded.get(), handoff.phase(), encryption.isRaw(), paused, sentBytes.get(), receivedBytes.get(), readerExecutor.isShutdown());
 	}
 
 	private static Thread daemon(Runnable runnable, String name) {
@@ -509,5 +439,4 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		}
 	}
 
-	private record WriteRequest(ByteBuffer data, int size, CompletableFuture<Void> result, boolean rawEra, TransportFrame.Type kind) {}
 }

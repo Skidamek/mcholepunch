@@ -16,12 +16,8 @@ public final class NettyEncryption {
 		transportSecret = secret.clone();
 	}
 
-	public void decrypt(ByteBuf input, ByteBuf output) {
-		update(encryption, false, input, output);
-	}
-
 	public void encrypt(ByteBuf input, ByteBuf output) {
-		update(encryption, true, input, output);
+		update(encryption, input, output);
 	}
 
 	public TransportEncryption transport() {
@@ -40,7 +36,7 @@ public final class NettyEncryption {
 		encryption.activateRaw();
 	}
 
-	private static void update(TransportEncryption encryption, boolean encrypt, ByteBuf input, ByteBuf output) {
+	private static void update(TransportEncryption encryption, ByteBuf input, ByteBuf output) {
 		int readableBytes = input.readableBytes();
 		if (readableBytes == 0) {
 			return;
@@ -48,18 +44,18 @@ public final class NettyEncryption {
 		output.ensureWritable(readableBytes);
 		int writerIndex = output.writerIndex();
 		if (input.nioBufferCount() == 1) {
-			writerIndex += update(encryption, encrypt, input.nioBuffer(input.readerIndex(), readableBytes), output.nioBuffer(writerIndex, readableBytes), readableBytes);
+			writerIndex += update(encryption, input.nioBuffer(input.readerIndex(), readableBytes), output.nioBuffer(writerIndex, readableBytes), readableBytes);
 		} else {
 			for (ByteBuffer source : input.nioBuffers(input.readerIndex(), readableBytes)) {
 				int sourceBytes = source.remaining();
-				writerIndex += update(encryption, encrypt, source, output.nioBuffer(writerIndex, sourceBytes), sourceBytes);
+				writerIndex += update(encryption, source, output.nioBuffer(writerIndex, sourceBytes), sourceBytes);
 			}
 		}
 		output.writerIndex(writerIndex);
 	}
 
-	private static int update(TransportEncryption encryption, boolean encrypt, ByteBuffer input, ByteBuffer output, int expectedBytes) {
-		int written = encrypt ? encryption.encrypt(input, output) : encryption.decrypt(input, output);
+	private static int update(TransportEncryption encryption, ByteBuffer input, ByteBuffer output, int expectedBytes) {
+		int written = encryption.encrypt(input, output);
 		if (written != expectedBytes) {
 			throw new IllegalStateException("transport cipher changed length from " + expectedBytes + " to " + written);
 		}

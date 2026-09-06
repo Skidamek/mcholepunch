@@ -7,6 +7,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
@@ -14,8 +15,10 @@ import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
+import io.netty.channel.WriteBufferWaterMark;
 import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.mcholepunch.HolepunchConnection;
@@ -33,7 +36,7 @@ import pl.skidam.mcholepunch.internal.transport.TransportHandoff;
  * flow control applies.
  */
 public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapter implements HolepunchConnection {
-	/** Pipeline name under which {@link NettyTakeover} installs this handler. */
+	/** Pipeline name under which {@link NettyLoginNegotiator} installs this handler. */
 	public static final String HANDLER_NAME = "mcholepunch-transport-framer";
 
 	private final long debugId = DebugLog.nextConnectionId();
@@ -42,7 +45,7 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	private final long maximumPendingWriteBytes;
 	private final boolean automaticRead;
 	private final AtomicBoolean closed = new AtomicBoolean();
-	private final java.util.concurrent.atomic.AtomicLong sentBytes = new java.util.concurrent.atomic.AtomicLong();
+	private final AtomicLong sentBytes = new AtomicLong();
 	private final AtomicReference<CompletableFuture<Void>> commitResult = new AtomicReference<>();
 	private final TransportHandoff handoff = new TransportHandoff();
 	private final ScheduledFuture<?> watchdog;
@@ -73,15 +76,15 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	@Override
 	public void handlerAdded(ChannelHandlerContext context) {
 		framerContext = context;
-		channel.config().setWriteBufferWaterMark(
-				new io.netty.channel.WriteBufferWaterMark(Math.max(1, (int) Math.min(Integer.MAX_VALUE, maximumPendingWriteBytes / 2)), (int) Math.min(Integer.MAX_VALUE, maximumPendingWriteBytes)));
+		channel.config().setWriteBufferWaterMark(new WriteBufferWaterMark(Math.max(1, (int) Math.min(Integer.MAX_VALUE, maximumPendingWriteBytes / 2)), (int) Math.min(Integer.MAX_VALUE, maximumPendingWriteBytes)));
 	}
 
 	@Override
 	public void write(ChannelHandlerContext context, Object message, ChannelPromise promise) throws Exception {
 		if (!(message instanceof ByteBuf input)) {
+			// A packet-shaped write from leftover vanilla state must not fail the connection.
 			ReferenceCountUtil.release(message);
-			promise.setFailure(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport framer only accepts byte buffers", null));
+			promise.setSuccess();
 			return;
 		}
 		if (!input.isReadable()) {
@@ -287,7 +290,7 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	}
 
 	/** Closes the channel on an inbound pipeline failure the application did not handle; the close future reports it to the connection. */
-	static final class InboundWatchdog extends io.netty.channel.ChannelInboundHandlerAdapter {
+	static final class InboundWatchdog extends ChannelInboundHandlerAdapter {
 		private final NettyHolepunchConnection connection;
 
 		InboundWatchdog(NettyHolepunchConnection connection) {

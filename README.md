@@ -12,23 +12,15 @@ this repository tracks Minecraft releases, and there is no Minecraft code and no
 
 ```java
 // server, once at startup: what a claimed login becomes
-HolepunchServerRegistry.register(executor, (username, address, marker) ->
-		new HolepunchHandler() {
-			@Override
-			public void onOpen(HolepunchConnection connection) {
-				connection.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)));
-			}
+NettyChannelRegistry.register(maximumPendingWriteBytes, (channel, connection) -> {
+	// install your handlers on the taken-over channel; inbound application bytes arrive on it,
+	// outbound writes travel the pipeline toward the connection
+	channel.pipeline().addLast("application", new MyProtocolHandler(connection));
+	connection.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)));
+});
 
-			@Override
-			public void onRead(ByteBuffer data) { /* application bytes, in order */ }
-
-			@Override
-			public void onClosed(HolepunchFailure failure) { /* why it ended */ }
-		});
-
-// server, in the Netty pipeline of every accepted Minecraft channel,
-// added after the "splitter" handler, before vanilla can own the login:
-channel.pipeline().addAfter("splitter", "mcholepunch", new NettyLoginClaimHandler(serverKeyPair));
+// server, in the Netty pipeline of every accepted Minecraft channel, before vanilla can own the login:
+NettyLoginClaimHandler.install(channel.pipeline(), serverKeyPair);
 
 // client; the protocol version is the vanilla protocol number of the target server
 HolepunchConnection connection = HolepunchClient.connect(
@@ -51,15 +43,17 @@ guaranteed to have open. It layers its own TLS on top with the transport handoff
    because the marker hides in the UUID and no vanilla decoder ever sees the packet.
 3. `NettyLoginClaimHandler` holds the handshake frame, reads the Login Start, and checks the UUID.
    No marker: it replays the original bytes downstream and removes itself, and the login proceeds
-   exactly as vanilla would have run it. Marker: it removes vanilla's future ownership before a
-   login listener exists.
+   exactly as vanilla would have run it. Marker: it starts the login negotiator, which strips the
+   vanilla pipeline wholesale and replaces it with mcholepunch's own vanilla-shaped framing,
+   before vanilla builds a login listener.
 4. The server sends an Encryption Request (packet 1, `shouldAuthenticate` always false). The
    client answers with a fresh AES secret sealed to the server's RSA public key, and both sides
    switch to AES/CFB8.
-5. The server sends an encrypted Custom Query (packet 4), `mcholepunch:takeover`, strips the
-   vanilla handlers listed in `NettyTakeoverSpec.minecraftLogin()`, and switches the connection to
-   mcholepunch's own transport. The client switches when it receives the query; from that point
-   both ends deliver `ByteBuffer`s to the registered `HolepunchHandler`.
+5. The server sends an encrypted Custom Query (packet 4), `mcholepunch:takeover`, and once that
+   write lands it swaps the negotiation framing for its transport and hands the channel to the
+   registered `HolepunchChannelApplication`. The client switches when it receives the query; from
+   that point the client delivers `ByteBuffer`s to its `HolepunchHandler` and the server owns the
+   taken-over Netty channel.
 
 ### The marker
 
@@ -101,20 +95,19 @@ beyond the two vanilla-shaped login packets.
 
 | Module | Description |
 |---|---|
-| `:core` | The login codec (`LoginCodec`), the marker, the NIO client and its negotiation, the vanilla-style crypto, SRV resolution, the transport handoff, and `HolepunchServerRegistry`. No Netty. |
-| `:server-netty` | The Netty server side: `NettyLoginClaimHandler`, the login negotiator, cipher handlers, the takeover that strips vanilla handlers, and the raw connection plumbing. Depends on Netty 4.1 and `:core`. |
+| `:core` | The login codec (`LoginCodec`), the marker, the NIO client and its negotiation, the vanilla-style crypto, SRV resolution, and the transport handoff. No Netty. |
+| `:server-netty` | The Netty server side: `NettyLoginClaimHandler`, the login negotiator that owns the taken-over channel, the vanilla-shaped framing handlers, and the raw connection plumbing. Depends on Netty 4.1 and `:core`. |
 
 Package `pl.skidam.mcholepunch` holds the public API (`HolepunchClient`, `HolepunchConnection`,
-`HolepunchHandler`, `HolepunchOptions`, `HolepunchRoute`, `HolepunchFailure`,
-`HolepunchServerRegistry`, and the `server.netty` handlers). Everything under `internal` can
-change without notice.
+`HolepunchHandler`, `HolepunchOptions`, `HolepunchRoute`, `HolepunchFailure`, and the `server.netty`
+handlers: `NettyChannelRegistry`, `NettyLoginClaimHandler`, `HolepunchChannelApplication`). Everything
+under `internal` can change without notice.
 
 Tuning lives in `HolepunchOptions`: username (a random one is generated when absent), the Forge
 and NeoForge `\0FML3\0` host suffix, connect and negotiation timeouts (10 s each), the handler
-setup timeout (5 s), the per-connection pending-write cap (4 MiB by default, shared by the client
-and the server registry), and the executor that runs callbacks (ForkJoinPool common pool by
-default). The server registry accepts an explicit pending-write cap in its longer `register`
-overload when an application needs one sized to its own frames.
+setup timeout (5 s), the per-connection pending-write cap (4 MiB by default for the client; the
+server registry takes one explicitly in `register`), and the executor that runs client callbacks
+(ForkJoinPool common pool by default).
 
 ## What it is not
 

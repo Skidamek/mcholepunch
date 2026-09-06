@@ -42,11 +42,7 @@ class NettyEncryptionTest {
 		CipherStreamState decryptor = MinecraftCrypt.decryptor(secret);
 		assertArrayEquals(new byte[]{1, 2, 3}, decryptor.update(first));
 		assertArrayEquals(new byte[]{4, 5, 6}, decryptor.update(second));
-		EmbeddedChannel decoder = new EmbeddedChannel(new NettyCipherDecoder(new NettyEncryption(secret)));
-		decoder.writeInbound(Unpooled.wrappedBuffer(first, second));
-		assertArrayEquals(new byte[]{1, 2, 3, 4, 5, 6}, readBytes(decoder.readInbound()));
 		encoder.finishAndReleaseAll();
-		decoder.finishAndReleaseAll();
 	}
 
 	private static byte[] readBytes(ByteBuf buffer) {

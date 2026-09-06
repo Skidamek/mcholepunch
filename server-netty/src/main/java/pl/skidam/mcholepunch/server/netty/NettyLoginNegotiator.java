@@ -14,6 +14,7 @@ import java.util.concurrent.TimeUnit;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
+import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
@@ -24,16 +25,23 @@ import pl.skidam.mcholepunch.internal.DebugLog;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
 import pl.skidam.mcholepunch.internal.protocol.LoginCodec;
+import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 import pl.skidam.mcholepunch.server.netty.NettyChannelRegistry.Registration;
 
 /**
- * Claims connections whose Login Start carries a holepunch marker, performs the login encryption
- * exchange, and hands the taken-over channel to the registered {@link HolepunchChannelApplication}.
+ * Owns the taken-over channel from the moment the holepunch marker is detected: the vanilla
+ * pipeline is stripped and replaced with our own vanilla-shaped negotiation framing, and after
+ * the takeover query the coordinated transport takes over. The wire stays byte-for-byte
+ * vanilla-shaped throughout.
  */
 public final class NettyLoginNegotiator {
 	public static final Duration DEFAULT_RESPONSE_TIMEOUT = Duration.ofSeconds(10);
 	/** The challenge mirrors vanilla's login verify token, which is four bytes. */
 	private static final int CHALLENGE_BYTES = 4;
+
+	private static final String RESPONSE_HANDLER_NAME = "mcholepunch-response-handler";
+	public static final String CIPHER_ENCODER_NAME = "mcholepunch-cipher-encoder";
+	private static final String TRANSPORT_DECODER_NAME = "mcholepunch-transport-decoder";
 
 	private final Channel channel;
 	private final KeyPair keyPair;
@@ -41,26 +49,23 @@ public final class NettyLoginNegotiator {
 	private final SocketAddress remoteAddress;
 	private final HolepunchMarker marker;
 	private final Registration registration;
-	private final NettyTakeoverSpec takeoverSpec;
 	private final Duration responseTimeout;
 	private final byte[] challenge;
 	private State state = State.NEW;
 	private ScheduledFuture<?> responseTimeoutFuture;
 	private NettyHolepunchConnection connection;
 
-	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration, NettyTakeoverSpec takeoverSpec) {
-		this(channel, keyPair, username, remoteAddress, marker, registration, takeoverSpec, DEFAULT_RESPONSE_TIMEOUT);
+	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration) {
+		this(channel, keyPair, username, remoteAddress, marker, registration, DEFAULT_RESPONSE_TIMEOUT);
 	}
 
-	NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration, NettyTakeoverSpec takeoverSpec,
-			Duration responseTimeout) {
+	NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration, Duration responseTimeout) {
 		this.channel = Objects.requireNonNull(channel, "channel");
 		this.keyPair = Objects.requireNonNull(keyPair, "keyPair");
 		this.username = Objects.requireNonNull(username, "username");
 		this.remoteAddress = Objects.requireNonNull(remoteAddress, "remoteAddress");
 		this.marker = Objects.requireNonNull(marker, "marker");
 		this.registration = Objects.requireNonNull(registration, "registration");
-		this.takeoverSpec = Objects.requireNonNull(takeoverSpec, "takeoverSpec");
 		this.responseTimeout = requirePositive(responseTimeout, "responseTimeout");
 		this.challenge = MinecraftCrypt.randomBytes(CHALLENGE_BYTES);
 	}
@@ -74,14 +79,14 @@ public final class NettyLoginNegotiator {
 			return;
 		}
 		try {
+			// Own the channel end to end: strip everything vanilla installed. Our framing handlers
+			// keep the wire vanilla-shaped.
 			ChannelPipeline pipeline = channel.pipeline();
-			if (pipeline.get(takeoverSpec.inboundEncryptionAnchor()) == null) {
-				throw new IllegalStateException("Minecraft frame decoder is missing");
-			}
-			if (pipeline.get(takeoverSpec.negotiatorName()) != null) {
-				throw new IllegalStateException("holepunch login negotiator is already installed");
-			}
-			pipeline.addAfter(takeoverSpec.inboundEncryptionAnchor(), takeoverSpec.negotiatorName(), new ResponseHandler());
+			pipeline.toMap().forEach((name, handler) -> pipeline.remove(handler));
+			pipeline.addLast(VanillaFrameDecoder.HANDLER_NAME, new VanillaFrameDecoder(LoginCodec.MAX_FRAME_BYTES));
+			pipeline.addLast(RESPONSE_HANDLER_NAME, new ResponseHandler());
+			pipeline.addLast(VanillaFrameEncoder.HANDLER_NAME, new VanillaFrameEncoder());
+			channel.config().setAutoRead(true);
 			state = State.REQUEST_SENT;
 			responseTimeoutFuture = channel.eventLoop().schedule(() -> fail(HolepunchFailure.Kind.TIMEOUT, "login encryption response timed out", null), responseTimeout.toNanos(), TimeUnit.NANOSECONDS);
 			ByteBuffer request = LoginCodec.encryptionRequestPacket(keyPair.getPublic().getEncoded(), challenge, false);
@@ -118,25 +123,40 @@ public final class NettyLoginNegotiator {
 			NettyEncryption encryption = new NettyEncryption(secret);
 			connection = new NettyHolepunchConnection(channel, encryption, registration.maximumPendingWriteBytes());
 			channel.closeFuture().addListener(ignored -> connection.closeWith(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "Minecraft channel closed", null)));
-			NettyTakeover.installEncryption(channel, takeoverSpec, encryption);
+			// Vanilla encrypts the whole framed packet after the key exchange; so do we: the
+			// frame encoder prefixes the payload and the cipher encoder encrypts the frame.
+			ChannelPipeline pipeline = channel.pipeline();
+			pipeline.addBefore(VanillaFrameEncoder.HANDLER_NAME, CIPHER_ENCODER_NAME, new NettyCipherEncoder(encryption));
 			ByteBuffer query = LoginCodec.takeoverQueryPacket(0);
-			NettyTakeover.sendTakeover(channel, Unpooled.wrappedBuffer(query), takeoverSpec, connection).whenComplete((ignored, error) -> executeOnEventLoop(() -> {
+			channel.writeAndFlush(Unpooled.wrappedBuffer(query)).addListener((ChannelFutureListener) future -> executeOnEventLoop(() -> {
 				if (state != State.TAKEOVER_WRITE) {
 					return;
 				}
-				if (error != null) {
+				if (!future.isSuccess()) {
 					state = State.CLOSED;
+					connection.closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "takeover query write failed", future.cause()));
 					return;
 				}
-				installApplication();
+				switchToTransport();
 			}));
 		} catch (Throwable throwable) {
 			fail(HolepunchFailure.Kind.IO, "unable to activate holepunch connection", throwable);
 		}
 	}
 
-	private void installApplication() {
+	/** Swaps the negotiation framing for the coordinated transport and hands the channel to the application. */
+	private void switchToTransport() {
+		if (state != State.TAKEOVER_WRITE) {
+			return;
+		}
 		try {
+			ChannelPipeline pipeline = channel.pipeline();
+			pipeline.remove(VanillaFrameDecoder.HANDLER_NAME);
+			pipeline.remove(RESPONSE_HANDLER_NAME);
+			pipeline.remove(VanillaFrameEncoder.HANDLER_NAME);
+			pipeline.addLast(TRANSPORT_DECODER_NAME, new NettyTransportDecoder(connection.encryption(), connection, TransportFrame.MAX_FRAME_BYTES));
+			pipeline.addLast(NettyHolepunchConnection.InboundWatchdog.class.getSimpleName(), new NettyHolepunchConnection.InboundWatchdog(connection));
+			pipeline.addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
 			registration.application().install(channel, connection);
 			state = State.OPEN;
 			DebugLog.log("SERVER", connection.debugId(), "application installed pipeline=%s", channel.pipeline().names());
@@ -155,10 +175,6 @@ public final class NettyLoginNegotiator {
 		}
 		state = State.CLOSED;
 		cancel(responseTimeoutFuture);
-		ChannelPipeline pipeline = channel.pipeline();
-		if (pipeline.get(takeoverSpec.negotiatorName()) != null) {
-			pipeline.remove(takeoverSpec.negotiatorName());
-		}
 		HolepunchFailure failure = new HolepunchFailure(kind, message, cause);
 		if (connection != null) {
 			connection.closeWith(failure);

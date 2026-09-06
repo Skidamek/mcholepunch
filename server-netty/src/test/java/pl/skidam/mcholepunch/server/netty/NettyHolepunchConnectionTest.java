@@ -3,6 +3,7 @@ package pl.skidam.mcholepunch.server.netty;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.CompletionStage;
@@ -35,6 +36,19 @@ class NettyHolepunchConnectionTest {
 		frame.readBytes(actual);
 		frame.release();
 		assertArrayEquals(expected, actual);
+		channel.finishAndReleaseAll();
+	}
+
+	@Test
+	void swallowsPacketShapedWritesFromLeftoverVanillaState() throws Exception {
+		EmbeddedChannel channel = new EmbeddedChannel();
+		NettyEncryption encryption = new NettyEncryption(MinecraftCrypt.newSecret());
+		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, encryption, 1024);
+		channel.pipeline().addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
+
+		channel.writeOutbound(new Object());
+
+		assertTrue(channel.isOpen());
 		channel.finishAndReleaseAll();
 	}
 

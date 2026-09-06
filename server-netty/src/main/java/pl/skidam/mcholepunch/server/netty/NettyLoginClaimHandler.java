@@ -6,6 +6,7 @@ import java.util.Optional;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
+import io.netty.channel.ChannelPipeline;
 import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.mcholepunch.internal.DebugLog;
@@ -19,8 +20,17 @@ import pl.skidam.mcholepunch.internal.protocol.LoginCodec;
  * removes itself.
  */
 public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
+	/** The vanilla inbound frame decoder: the one pipeline position every accepted server channel has. */
+	private static final String VANILLA_INBOUND_ANCHOR = "splitter";
+	private static final String HANDLER_NAME = "mcholepunch-login-claim";
+
 	private final KeyPair keyPair;
 	private ByteBuf handshake;
+
+	/** Installs the claim handler after the vanilla frame decoder, before vanilla can own the login. */
+	public static void install(ChannelPipeline pipeline, KeyPair keyPair) {
+		pipeline.addAfter(VANILLA_INBOUND_ANCHOR, HANDLER_NAME, new NettyLoginClaimHandler(keyPair));
+	}
 
 	public NettyLoginClaimHandler(KeyPair keyPair) {
 		this.keyPair = keyPair;
@@ -54,7 +64,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 		releaseHeld();
 		ctx.pipeline().remove(this);
 		DebugLog.log("login takeover", 0, "marker accepted name=%s remote=%s", loginStart.username(), ctx.channel().remoteAddress());
-		new NettyLoginNegotiator(ctx.channel(), keyPair, loginStart.username(), ctx.channel().remoteAddress(), marker.get(), registration, NettyTakeoverSpec.minecraftLogin()).start();
+		new NettyLoginNegotiator(ctx.channel(), keyPair, loginStart.username(), ctx.channel().remoteAddress(), marker.get(), registration).start();
 	}
 
 	@Override

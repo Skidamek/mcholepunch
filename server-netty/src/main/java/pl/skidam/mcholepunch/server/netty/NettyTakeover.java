@@ -5,6 +5,7 @@ import java.util.concurrent.CompletableFuture;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.*;
+import io.netty.handler.flow.FlowControlHandler;
 import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.mcholepunch.HolepunchFailure;
@@ -90,6 +91,16 @@ public final class NettyTakeover {
 					}
 				}
 				removeIfPresent(pipeline, spec, spec.inboundEncryptionAnchor());
+				// Vanilla parks login connections with autoRead off and a FlowControlHandler that
+				// holds packets for a login listener the takeover replaced. Without draining that
+				// stage, exactly the first inbound message reaches the application and the rest
+				// queues forever behind a read() nobody issues.
+				for (String name : pipeline.names()) {
+					if (pipeline.get(name) instanceof FlowControlHandler) {
+						pipeline.remove(name);
+					}
+				}
+				channel.config().setAutoRead(true);
 				result.complete(null);
 			} catch (Throwable throwable) {
 				result.completeExceptionally(throwable);

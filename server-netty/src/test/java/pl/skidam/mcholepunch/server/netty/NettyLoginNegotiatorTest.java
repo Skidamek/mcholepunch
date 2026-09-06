@@ -11,7 +11,6 @@ import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
-import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -20,13 +19,11 @@ import org.junit.jupiter.api.Test;
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.ChannelHandlerContext;
-import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 import io.netty.handler.codec.MessageToByteEncoder;
 
 import pl.skidam.mcholepunch.HolepunchConnection;
-import pl.skidam.mcholepunch.HolepunchHandler;
 import pl.skidam.mcholepunch.internal.crypto.CipherStreamState;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
@@ -34,20 +31,17 @@ import pl.skidam.mcholepunch.internal.protocol.LoginCodec;
 import pl.skidam.mcholepunch.internal.protocol.MinecraftFrameReader;
 import pl.skidam.mcholepunch.internal.protocol.TakeoverQuery;
 import pl.skidam.mcholepunch.internal.protocol.VarInts;
-import pl.skidam.mcholepunch.server.HolepunchServerRegistry;
 
 class NettyLoginNegotiatorTest {
 
 	@Test
-	void negotiatesEncryptionAndOpensOnlyAfterTakeoverWrite() throws Exception {
+	void negotiatesEncryptionAndHandsOverTheChannelOnlyAfterTakeoverWrite() throws Exception {
 		EmbeddedChannel channel = minecraftPipeline();
 		KeyPair keyPair = keyPair();
-		AtomicBoolean opened = new AtomicBoolean();
-		try (HolepunchServerRegistry.Registration registration = HolepunchServerRegistry.register(Runnable::run, 1024, Duration.ofSeconds(1), (username, remote, marker) -> new HolepunchHandler() {
-			@Override
-			public void onOpen(HolepunchConnection connection) {
-				opened.set(true);
-			}
+		AtomicBoolean installed = new AtomicBoolean();
+		try (NettyChannelRegistry.Registration registration = NettyChannelRegistry.register(1024, (channel0, connection) -> {
+			channel0.pipeline().addLast("application", new io.netty.channel.ChannelInboundHandlerAdapter());
+			installed.set(true);
 		})) {
 			NettyTakeoverSpec spec = takeoverSpec();
 			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair, "test", new InetSocketAddress("127.0.0.1", 25565), new HolepunchMarker(1, 0, 1), registration, spec);
@@ -61,7 +55,7 @@ class NettyLoginNegotiatorTest {
 			} finally {
 				requestBytes.release();
 			}
-			assertFalse(opened.get());
+			assertFalse(installed.get());
 
 			byte[] secret = MinecraftCrypt.newSecret();
 			ByteBuffer response = unframedEncryptionResponse(MinecraftCrypt.rsaEncrypt(keyPair.getPublic(), secret), MinecraftCrypt.rsaEncrypt(keyPair.getPublic(), request.verifyToken()));
@@ -80,25 +74,21 @@ class NettyLoginNegotiatorTest {
 			}
 			TakeoverQuery query = LoginCodec.readTakeoverQuery(singleFrame(decrypted));
 			assertEquals(TakeoverQuery.IDENTIFIER, query.identifier());
-			assertTrue(opened.get());
+			assertTrue(installed.get());
 			assertNull(channel.pipeline().get(spec.negotiatorName()));
 			assertNull(channel.pipeline().get("splitter"));
-			assertNotNull(channel.pipeline().get(spec.rawInboundName()));
+			assertNotNull(channel.pipeline().get(NettyHolepunchConnection.HANDLER_NAME));
+			assertNotNull(channel.pipeline().get(spec.inboundWatchdogName()));
 		} finally {
 			channel.finishAndReleaseAll();
 		}
 	}
 
 	@Test
-	void malformedResponseClosesWithoutOpening() throws Exception {
+	void malformedResponseClosesWithoutInstalling() throws Exception {
 		EmbeddedChannel channel = minecraftPipeline();
-		AtomicBoolean opened = new AtomicBoolean();
-		try (HolepunchServerRegistry.Registration registration = HolepunchServerRegistry.register(Runnable::run, 1024, Duration.ofSeconds(1), (username, remote, marker) -> new HolepunchHandler() {
-			@Override
-			public void onOpen(HolepunchConnection connection) {
-				opened.set(true);
-			}
-		})) {
+		AtomicBoolean installed = new AtomicBoolean();
+		try (NettyChannelRegistry.Registration registration = NettyChannelRegistry.register(1024, (channel0, connection) -> installed.set(true))) {
 			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair(), "test", new InetSocketAddress("127.0.0.1", 25565), new HolepunchMarker(1, 0, 1), registration, takeoverSpec());
 
 			negotiator.start();
@@ -107,7 +97,7 @@ class NettyLoginNegotiatorTest {
 			channel.pipeline().context("splitter").fireChannelRead(Unpooled.wrappedBuffer(new byte[]{2}));
 
 			assertFalse(channel.isOpen());
-			assertFalse(opened.get());
+			assertFalse(installed.get());
 		} finally {
 			channel.finishAndReleaseAll();
 		}
@@ -115,33 +105,33 @@ class NettyLoginNegotiatorTest {
 
 	private static EmbeddedChannel minecraftPipeline() {
 		EmbeddedChannel channel = new EmbeddedChannel();
-		channel.pipeline().addLast("splitter", new ChannelInboundHandlerAdapter());
-		channel.pipeline().addLast("flow_control", new ChannelInboundHandlerAdapter());
-		channel.pipeline().addLast("decoder", new ChannelInboundHandlerAdapter());
+		channel.pipeline().addLast("splitter", new io.netty.channel.ChannelInboundHandlerAdapter());
+		channel.pipeline().addLast("flow_control", new io.netty.channel.ChannelInboundHandlerAdapter());
+		channel.pipeline().addLast("decoder", new io.netty.channel.ChannelInboundHandlerAdapter());
 		channel.pipeline().addLast("prepender", new MinecraftPrepender());
 		channel.pipeline().addLast("encoder", new ChannelOutboundHandlerAdapter());
-		channel.pipeline().addLast("packet_handler", new ChannelInboundHandlerAdapter());
+		channel.pipeline().addLast("packet_handler", new io.netty.channel.ChannelInboundHandlerAdapter());
 		return channel;
 	}
 
 	private static NettyTakeoverSpec takeoverSpec() {
-		return new NettyTakeoverSpec("splitter", "prepender", List.of("timeout", "splitter", "flow_control", "decoder", "prepender", "encoder", "hackfix", "packet_handler"));
+		return new NettyTakeoverSpec("splitter", "prepender", java.util.List.of("splitter", "flow_control", "decoder", "prepender", "encoder", "packet_handler"));
 	}
 
 	private static KeyPair keyPair() throws Exception {
 		KeyPairGenerator generator = KeyPairGenerator.getInstance("RSA");
-		generator.initialize(1024);
+		generator.initialize(2048);
 		return generator.generateKeyPair();
 	}
 
 	private static ByteBuffer singleFrame(ByteBuf framed) throws Exception {
 		byte[] bytes = new byte[framed.readableBytes()];
-		framed.getBytes(framed.readerIndex(), bytes);
+		framed.readBytes(bytes);
 		return singleFrame(ByteBuffer.wrap(bytes));
 	}
 
 	private static ByteBuffer singleFrame(ByteBuffer framed) throws Exception {
-		List<ByteBuffer> frames = new MinecraftFrameReader(2048).feed(framed);
+		List<ByteBuffer> frames = new MinecraftFrameReader(2048).feed(framed, 1);
 		assertEquals(1, frames.size());
 		return frames.get(0);
 	}

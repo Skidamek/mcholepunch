@@ -17,12 +17,12 @@ public record NettyTakeoverSpec(String inboundEncryptionAnchor, String outboundE
 		return new NettyTakeoverSpec("splitter", "prepender", List.of("timeout", "splitter", "flow_control", "decoder", "prepender", "encoder", "hackfix", "packet_handler", "unbundler", "bundler"));
 	}
 
-	public String rawInboundName() {
-		return "mcholepunch-raw-inbound";
-	}
-
 	public String rawOutboundName() {
 		return "mcholepunch-raw-outbound";
+	}
+
+	public String inboundWatchdogName() {
+		return "mcholepunch-inbound-watchdog";
 	}
 
 	public String cipherDecoderName() {
@@ -39,6 +39,7 @@ public record NettyTakeoverSpec(String inboundEncryptionAnchor, String outboundE
 
 	/** Whether the takeover installs under this name, so the strip pass never removes its own handlers. */
 	public boolean owns(String handlerName) {
-		return rawInboundName().equals(handlerName) || rawOutboundName().equals(handlerName) || cipherDecoderName().equals(handlerName) || cipherEncoderName().equals(handlerName);
+		return rawOutboundName().equals(handlerName) || inboundWatchdogName().equals(handlerName) || cipherDecoderName().equals(handlerName) || cipherEncoderName().equals(handlerName)
+				|| NettyHolepunchConnection.HANDLER_NAME.equals(handlerName);
 	}
 }

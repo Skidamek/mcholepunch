@@ -11,7 +11,6 @@ import io.netty.util.ReferenceCountUtil;
 import pl.skidam.mcholepunch.internal.DebugLog;
 import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
 import pl.skidam.mcholepunch.internal.protocol.LoginCodec;
-import pl.skidam.mcholepunch.server.HolepunchServerRegistry;
 
 /**
  * Claims connections whose Login Start carries a holepunch marker before vanilla builds a login
@@ -43,7 +42,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 			return;
 		}
 
-		HolepunchServerRegistry.Registration registration = HolepunchServerRegistry.current();
+		NettyChannelRegistry.Registration registration = NettyChannelRegistry.current();
 		LoginCodec.LoginStart loginStart = readLoginStart(frame);
 		Optional<HolepunchMarker> marker = loginStart == null ? Optional.empty() : markerOf(loginStart);
 		if (registration == null || marker.isEmpty()) {

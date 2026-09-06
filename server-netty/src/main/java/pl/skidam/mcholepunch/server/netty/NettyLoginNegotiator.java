@@ -20,13 +20,16 @@ import io.netty.channel.ChannelPipeline;
 import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.mcholepunch.HolepunchFailure;
-import pl.skidam.mcholepunch.HolepunchHandler;
 import pl.skidam.mcholepunch.internal.DebugLog;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
 import pl.skidam.mcholepunch.internal.protocol.LoginCodec;
-import pl.skidam.mcholepunch.server.HolepunchServerRegistry;
+import pl.skidam.mcholepunch.server.netty.NettyChannelRegistry.Registration;
 
+/**
+ * Claims connections whose Login Start carries a holepunch marker, performs the login encryption
+ * exchange, and hands the taken-over channel to the registered {@link HolepunchChannelApplication}.
+ */
 public final class NettyLoginNegotiator {
 	public static final Duration DEFAULT_RESPONSE_TIMEOUT = Duration.ofSeconds(10);
 	/** The challenge mirrors vanilla's login verify token, which is four bytes. */
@@ -37,20 +40,19 @@ public final class NettyLoginNegotiator {
 	private final String username;
 	private final SocketAddress remoteAddress;
 	private final HolepunchMarker marker;
-	private final HolepunchServerRegistry.Registration registration;
+	private final Registration registration;
 	private final NettyTakeoverSpec takeoverSpec;
 	private final Duration responseTimeout;
 	private final byte[] challenge;
 	private State state = State.NEW;
 	private ScheduledFuture<?> responseTimeoutFuture;
-	private ScheduledFuture<?> setupTimeoutFuture;
 	private NettyHolepunchConnection connection;
 
-	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, HolepunchServerRegistry.Registration registration, NettyTakeoverSpec takeoverSpec) {
+	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration, NettyTakeoverSpec takeoverSpec) {
 		this(channel, keyPair, username, remoteAddress, marker, registration, takeoverSpec, DEFAULT_RESPONSE_TIMEOUT);
 	}
 
-	NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, HolepunchServerRegistry.Registration registration, NettyTakeoverSpec takeoverSpec,
+	NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration, NettyTakeoverSpec takeoverSpec,
 			Duration responseTimeout) {
 		this.channel = Objects.requireNonNull(channel, "channel");
 		this.keyPair = Objects.requireNonNull(keyPair, "keyPair");
@@ -102,8 +104,8 @@ public final class NettyLoginNegotiator {
 			LoginCodec.EncryptionResponse response = LoginCodec.readEncryptionResponse(input.nioBuffer());
 			byte[] secret = MinecraftCrypt.decryptLoginSecret(keyPair.getPrivate(), response.encryptedSecret(), response.encryptedChallenge(), challenge);
 			cancel(responseTimeoutFuture);
-			state = State.PREPARING_HANDLER;
-			prepareHandler(secret);
+			state = State.TAKEOVER_WRITE;
+			beginTakeover(secret);
 		} catch (IOException exception) {
 			fail(HolepunchFailure.Kind.UNEXPECTED_PACKET, "invalid login encryption response", exception);
 		} catch (GeneralSecurityException exception) {
@@ -111,36 +113,13 @@ public final class NettyLoginNegotiator {
 		}
 	}
 
-	private void prepareHandler(byte[] secret) {
-		CompletableFuture<HolepunchHandler> preparation = CompletableFuture.supplyAsync(() -> {
-			try {
-				return Objects.requireNonNull(registration.factory().create(username, remoteAddress, marker), "application handler");
-			} catch (Exception exception) {
-				throw new HandlerPreparationException(exception);
-			}
-		}, registration.executor());
-		setupTimeoutFuture = channel.eventLoop().schedule(() -> fail(HolepunchFailure.Kind.TIMEOUT, "holepunch handler preparation timed out", null), registration.handlerSetupTimeout().toNanos(), TimeUnit.NANOSECONDS);
-		preparation.whenComplete((handler, error) -> executeOnEventLoop(() -> {
-			if (state != State.PREPARING_HANDLER) {
-				return;
-			}
-			cancel(setupTimeoutFuture);
-			if (error != null) {
-				fail(HolepunchFailure.Kind.IO, "unable to prepare holepunch handler", unwrap(error));
-				return;
-			}
-			beginTakeover(secret, handler);
-		}));
-	}
-
-	private void beginTakeover(byte[] secret, HolepunchHandler handler) {
+	private void beginTakeover(byte[] secret) {
 		try {
 			NettyEncryption encryption = new NettyEncryption(secret);
-			connection = new NettyHolepunchConnection(channel, registration.executor(), handler, registration.maximumPendingWriteBytes(), encryption);
+			connection = new NettyHolepunchConnection(channel, encryption, registration.maximumPendingWriteBytes());
 			channel.closeFuture().addListener(ignored -> connection.closeWith(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "Minecraft channel closed", null)));
 			NettyTakeover.installEncryption(channel, takeoverSpec, encryption);
 			ByteBuffer query = LoginCodec.takeoverQueryPacket(0);
-			state = State.TAKEOVER_WRITE;
 			NettyTakeover.sendTakeover(channel, Unpooled.wrappedBuffer(query), takeoverSpec, connection).whenComplete((ignored, error) -> executeOnEventLoop(() -> {
 				if (state != State.TAKEOVER_WRITE) {
 					return;
@@ -149,10 +128,24 @@ public final class NettyLoginNegotiator {
 					state = State.CLOSED;
 					return;
 				}
-				state = State.OPEN;
+				if (installApplication()) {
+					NettyTakeover.stripVanilla(channel, takeoverSpec);
+					state = State.OPEN;
+				}
 			}));
 		} catch (Throwable throwable) {
 			fail(HolepunchFailure.Kind.IO, "unable to activate holepunch connection", throwable);
+		}
+	}
+
+	private boolean installApplication() {
+		try {
+			registration.application().install(channel, connection);
+			DebugLog.log("SERVER", connection.debugId(), "application installed pipeline=%s", channel.pipeline().names());
+			return true;
+		} catch (Throwable throwable) {
+			fail(HolepunchFailure.Kind.IO, "unable to install the holepunch application", unwrap(throwable));
+			return false;
 		}
 	}
 
@@ -166,7 +159,6 @@ public final class NettyLoginNegotiator {
 		}
 		state = State.CLOSED;
 		cancel(responseTimeoutFuture);
-		cancel(setupTimeoutFuture);
 		ChannelPipeline pipeline = channel.pipeline();
 		if (pipeline.get(takeoverSpec.negotiatorName()) != null) {
 			pipeline.remove(takeoverSpec.negotiatorName());
@@ -233,13 +225,7 @@ public final class NettyLoginNegotiator {
 		}
 	}
 
-	private static final class HandlerPreparationException extends RuntimeException {
-		private HandlerPreparationException(Throwable cause) {
-			super(cause);
-		}
-	}
-
 	private enum State {
-		NEW, REQUEST_SENT, PREPARING_HANDLER, TAKEOVER_WRITE, OPEN, CLOSED
+		NEW, REQUEST_SENT, TAKEOVER_WRITE, OPEN, CLOSED
 	}
 }

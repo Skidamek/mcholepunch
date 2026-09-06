@@ -29,7 +29,7 @@ public final class NettyTransportDecoder extends ByteToMessageDecoder {
 	protected void decode(ChannelHandlerContext context, ByteBuf input, List<Object> output) {
 		while (input.isReadable()) {
 			if (feed.isRaw()) {
-				output.add(new NettyHolepunchConnection.RawInbound(input.readRetainedSlice(input.readableBytes())));
+				output.add(input.readRetainedSlice(input.readableBytes()));
 				return;
 			}
 			for (ByteBuffer source : input.nioBuffers(input.readerIndex(), input.readableBytes())) {

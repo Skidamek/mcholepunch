@@ -6,15 +6,17 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
-import java.util.concurrent.atomic.AtomicReference;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.buffer.Unpooled;
+import io.netty.channel.ChannelHandlerContext;
+import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.embedded.EmbeddedChannel;
 
-import pl.skidam.mcholepunch.HolepunchHandler;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
 import pl.skidam.mcholepunch.internal.crypto.TransportEncryption;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrameCodec;
@@ -25,26 +27,16 @@ class NettyTransportDecoderTest {
 		byte[] secret = MinecraftCrypt.newSecret();
 		NettyEncryption serverEncryption = new NettyEncryption(secret);
 		TransportEncryption clientEncryption = TransportEncryption.server(secret);
-		AtomicReference<String> framed = new AtomicReference<>();
-		AtomicReference<String> raw = new AtomicReference<>();
+		List<byte[]> received = new ArrayList<>();
 		EmbeddedChannel channel = new EmbeddedChannel();
-		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, Runnable::run, new HolepunchHandler() {
-			@Override
-			public void onRead(ByteBuffer data) {
-				framed.set(remaining(data));
-			}
-
-			@Override
-			public void onRawRead(ByteBuffer data) {
-				raw.set(remaining(data));
-			}
-		}, 1024, serverEncryption);
+		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, serverEncryption, 1024);
 		channel.pipeline().addLast("transport-decoder", new NettyTransportDecoder(serverEncryption, connection, 1024));
-		channel.pipeline().addLast("raw", new NettyHolepunchConnection.RawInboundHandler(connection));
+		channel.pipeline().addLast("collector", new CollectingHandler(received));
 		channel.pipeline().addLast("transport-encoder", new NettyCipherEncoder(serverEncryption));
+		channel.pipeline().addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
 
 		channel.writeInbound(Unpooled.wrappedBuffer(clientEncryption.encrypt(bytes(TransportFrameCodec.data(ByteBuffer.wrap("framed".getBytes(StandardCharsets.UTF_8)))))));
-		assertEquals("framed", framed.get());
+		assertEquals(List.of("framed"), texts(received));
 
 		var committed = connection.commitTransportUpgrade().toCompletableFuture();
 		channel.runPendingTasks();
@@ -56,10 +48,9 @@ class NettyTransportDecoderTest {
 		assertTrue(serverEncryption.isRaw());
 
 		clientEncryption.activateRaw();
-		byte[] payload = "raw".getBytes(StandardCharsets.UTF_8);
-		channel.writeInbound(Unpooled.wrappedBuffer(payload));
+		channel.writeInbound(Unpooled.wrappedBuffer("raw".getBytes(StandardCharsets.UTF_8)));
 
-		assertEquals("raw", raw.get());
+		assertEquals(List.of("framed", "raw"), texts(received));
 		channel.finishAndReleaseAll();
 	}
 
@@ -68,17 +59,13 @@ class NettyTransportDecoderTest {
 		byte[] secret = MinecraftCrypt.newSecret();
 		NettyEncryption serverEncryption = new NettyEncryption(secret);
 		TransportEncryption clientEncryption = TransportEncryption.server(secret);
-		AtomicReference<String> raw = new AtomicReference<>();
+		List<byte[]> received = new ArrayList<>();
 		EmbeddedChannel channel = new EmbeddedChannel();
-		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, Runnable::run, new HolepunchHandler() {
-			@Override
-			public void onRawRead(ByteBuffer data) {
-				raw.set(remaining(data));
-			}
-		}, 1024, serverEncryption);
+		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, serverEncryption, 1024);
 		channel.pipeline().addLast("transport-decoder", new NettyTransportDecoder(serverEncryption, connection, 1024));
-		channel.pipeline().addLast("raw", new NettyHolepunchConnection.RawInboundHandler(connection));
+		channel.pipeline().addLast("collector", new CollectingHandler(received));
 		channel.pipeline().addLast("transport-encoder", new NettyCipherEncoder(serverEncryption));
+		channel.pipeline().addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
 
 		var committed = connection.commitTransportUpgrade().toCompletableFuture();
 		channel.runPendingTasks();
@@ -87,14 +74,32 @@ class NettyTransportDecoderTest {
 		committed.get();
 
 		channel.writeInbound(Unpooled.wrappedBuffer(new byte[]{4, 5, 6}));
-		assertArrayEquals(new byte[]{4, 5, 6}, raw.get().getBytes(StandardCharsets.UTF_8));
+		assertArrayEquals(new byte[]{4, 5, 6}, received.get(0));
 		channel.finishAndReleaseAll();
 	}
 
-	private static String remaining(ByteBuffer data) {
-		byte[] bytes = new byte[data.remaining()];
-		data.duplicate().get(bytes);
-		return new String(bytes, StandardCharsets.UTF_8);
+	private static List<String> texts(List<byte[]> received) {
+		return received.stream().map(bytes -> new String(bytes, StandardCharsets.UTF_8)).toList();
+	}
+
+	private static final class CollectingHandler extends ChannelInboundHandlerAdapter {
+		private final List<byte[]> received;
+
+		CollectingHandler(List<byte[]> received) {
+			this.received = received;
+		}
+
+		@Override
+		public void channelRead(ChannelHandlerContext context, Object message) {
+			ByteBuf buffer = (ByteBuf) message;
+			try {
+				byte[] bytes = new byte[buffer.readableBytes()];
+				buffer.readBytes(bytes);
+				received.add(bytes);
+			} finally {
+				buffer.release();
+			}
+		}
 	}
 
 	private static byte[] bytes(ByteBuffer buffer) {

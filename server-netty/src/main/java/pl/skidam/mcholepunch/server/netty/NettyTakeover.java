@@ -40,7 +40,6 @@ public final class NettyTakeover {
 			}
 			activate(channel, spec, connection).whenComplete((ignored, error) -> {
 				if (error == null) {
-					connection.open();
 					result.complete(null);
 				} else {
 					connection.closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "takeover activation failed", error));
@@ -51,6 +50,12 @@ public final class NettyTakeover {
 		return result;
 	}
 
+	/**
+	 * Installs the mcholepunch transport handlers on the taken-over channel. Vanilla handlers are
+	 * left in place; {@link #stripVanilla} removes them only after the application installed its
+	 * own inbound chain, so bytes buffered behind Minecraft framing flush into the application
+	 * pipeline instead of a not-yet-installed one.
+	 */
 	public static CompletableFuture<Void> activate(Channel channel, NettyTakeoverSpec spec, NettyHolepunchConnection connection) {
 		CompletableFuture<Void> result = new CompletableFuture<>();
 		Runnable activation = () -> {
@@ -59,8 +64,15 @@ public final class NettyTakeover {
 				if (connection.encryption() != null && pipeline.get(spec.cipherDecoderName()) != null) {
 					pipeline.replace(spec.cipherDecoderName(), spec.cipherDecoderName(), new NettyTransportDecoder(connection.encryption(), connection, TransportFrame.MAX_FRAME_BYTES));
 				}
-				if (pipeline.get(spec.rawInboundName()) == null) {
-					pipeline.addAfter(spec.inboundEncryptionAnchor(), spec.rawInboundName(), new NettyHolepunchConnection.RawInboundHandler(connection));
+				if (pipeline.get(NettyHolepunchConnection.HANDLER_NAME) == null) {
+					if (pipeline.get(spec.cipherEncoderName()) != null) {
+						pipeline.addBefore(spec.cipherEncoderName(), NettyHolepunchConnection.HANDLER_NAME, connection);
+					} else {
+						pipeline.addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
+					}
+				}
+				if (pipeline.get(spec.inboundWatchdogName()) == null) {
+					pipeline.addLast(spec.inboundWatchdogName(), new NettyHolepunchConnection.InboundWatchdog(connection));
 				}
 				if (pipeline.get(spec.rawOutboundName()) == null) {
 					if (pipeline.get(spec.cipherEncoderName()) != null) {
@@ -69,13 +81,6 @@ public final class NettyTakeover {
 						pipeline.addLast(spec.rawOutboundName(), new PassThroughOutboundHandler());
 					}
 				}
-				removeIfPresent(pipeline, spec, spec.negotiatorName());
-				for (String name : spec.removalNames()) {
-					if (!name.equals(spec.inboundEncryptionAnchor())) {
-						removeIfPresent(pipeline, spec, name);
-					}
-				}
-				removeIfPresent(pipeline, spec, spec.inboundEncryptionAnchor());
 				result.complete(null);
 			} catch (Throwable throwable) {
 				result.completeExceptionally(throwable);
@@ -87,6 +92,25 @@ public final class NettyTakeover {
 			channel.eventLoop().execute(activation);
 		}
 		return result;
+	}
+
+	/** Removes the vanilla handlers the takeover displaced. Their buffered inbound bytes flush into the installed application pipeline. */
+	public static void stripVanilla(Channel channel, NettyTakeoverSpec spec) {
+		Runnable strip = () -> {
+			ChannelPipeline pipeline = channel.pipeline();
+			removeIfPresent(pipeline, spec, spec.negotiatorName());
+			for (String name : spec.removalNames()) {
+				if (!name.equals(spec.inboundEncryptionAnchor())) {
+					removeIfPresent(pipeline, spec, name);
+				}
+			}
+			removeIfPresent(pipeline, spec, spec.inboundEncryptionAnchor());
+		};
+		if (channel.eventLoop().inEventLoop()) {
+			strip.run();
+		} else {
+			channel.eventLoop().execute(strip);
+		}
 	}
 
 	private static void removeIfPresent(ChannelPipeline pipeline, NettyTakeoverSpec spec, String name) {

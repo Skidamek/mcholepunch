@@ -84,6 +84,12 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 			promise.setFailure(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport framer only accepts byte buffers", null));
 			return;
 		}
+		if (!input.isReadable()) {
+			// Vanilla's tick flush produces empty writes; the transport forbids empty data frames, so they complete as no-ops.
+			input.release();
+			promise.setSuccess();
+			return;
+		}
 		if (closed.get()) {
 			ReferenceCountUtil.release(input);
 			promise.setFailure(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));

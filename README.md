@@ -100,14 +100,16 @@ beyond the two vanilla-shaped login packets.
 
 Package `pl.skidam.mcholepunch` holds the public API (`HolepunchClient`, `HolepunchConnection`,
 `HolepunchHandler`, `HolepunchOptions`, `HolepunchRoute`, `HolepunchFailure`, and the `server.netty`
-handlers: `NettyChannelRegistry`, `NettyLoginClaimHandler`, `HolepunchChannelApplication`). Everything
-under `internal` can change without notice.
+integration points: `NettyChannelRegistry`, `NettyLoginClaimHandler`, `HolepunchChannelApplication`).
+These names are the stable surface. The rest of the public classes in `server.netty` are the
+takeover machinery itself, and everything under `internal`, can all change without notice.
 
 Tuning lives in `HolepunchOptions`: username (a random one is generated when absent), the Forge
-and NeoForge `\0FML3\0` host suffix, connect and negotiation timeouts (10 s each), the handler
-setup timeout (5 s), the per-connection pending-write cap (4 MiB by default for the client; the
-server registry takes one explicitly in `register`), and the executor that runs client callbacks
-(ForkJoinPool common pool by default).
+and NeoForge `\0FML3\0` host suffix, connect and negotiation timeouts (10 s each), and the
+executor that runs client callbacks (ForkJoinPool common pool by default). The client imposes no
+pending-write cap: a write blocks its caller until the socket takes the bytes, so backpressure is
+the caller's own blocking. The server's pending-write cap is the one value passed to
+`NettyChannelRegistry.register`.
 
 ## What it is not
 
@@ -124,7 +126,7 @@ identity.
 ./gradlew formatApply    # spotless, Eclipse formatter
 ```
 
-Both modules target Java 17. Server-side tracing is behind
+Both modules target Java 17. Transport tracing, on the client and the server alike, is behind
 `-Dmcholepunch.debug=true` (frame previews sized by `-Dmcholepunch.debug.previewBytes`, 16 by
 default).
 

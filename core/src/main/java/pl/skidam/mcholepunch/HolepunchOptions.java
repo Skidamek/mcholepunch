@@ -10,7 +10,6 @@ import pl.skidam.mcholepunch.internal.Usernames;
 public final class HolepunchOptions {
 	public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 	public static final Duration DEFAULT_NEGOTIATION_TIMEOUT = Duration.ofSeconds(10);
-	public static final Duration DEFAULT_HANDLER_SETUP_TIMEOUT = Duration.ofSeconds(5);
 	/**
 	 * Forge 1.17+ / NeoForge ClientIntention hostname extra. `ConnectionType.forVersionFlag` treats
 	 * a host that contains this as MODDED with FML protocol 3. It lives here because appending it

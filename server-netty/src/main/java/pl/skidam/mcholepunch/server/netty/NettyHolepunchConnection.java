@@ -125,32 +125,17 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 			return CompletableFuture.failedFuture(new NullPointerException("data"));
 		}
 		CompletableFuture<Void> result = new CompletableFuture<>();
-		ChannelHandlerContext context = framerContext;
-		if (context == null) {
-			result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport framer is not installed", null));
-			return result;
-		}
-		executeOnEventLoop(() -> {
-			if (closed.get()) {
-				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
+		// The framer owns the era checks and the framing; writing through the channel keeps one
+		// copy of those rules for pipeline writes and this API alike.
+		channel.writeAndFlush(Unpooled.wrappedBuffer(data.duplicate())).addListener((ChannelFutureListener) completed -> {
+			if (!completed.isSuccess()) {
+				DebugLog.failure("SERVER", debugId, "Netty write failed", completed.cause());
+				result.completeExceptionally(completed.cause());
+				closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", completed.cause()));
 				return;
 			}
-			if (handoff.isCommitting()) {
-				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
-				return;
-			}
-			ByteBuffer frame = handoff.isRaw() ? data.duplicate() : TransportFrameCodec.data(data);
-			DebugLog.log("SERVER", debugId, "event-loop writeAndFlush kind=DATA plaintext=%d raw=%s writable=%s", frame.remaining(), handoff.isRaw(), channel.isWritable());
-			context.writeAndFlush(Unpooled.wrappedBuffer(frame)).addListener((ChannelFutureListener) completed -> {
-				if (!completed.isSuccess()) {
-					DebugLog.failure("SERVER", debugId, "Netty write failed", completed.cause());
-					result.completeExceptionally(completed.cause());
-					closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", completed.cause()));
-					return;
-				}
-				DebugLog.log("SERVER", debugId, "write complete bytes=%d totalSent=%d writable=%s", frame.remaining(), sentBytes.addAndGet(frame.remaining()), channel.isWritable());
-				result.complete(null);
-			});
+			DebugLog.log("SERVER", debugId, "write complete plaintext=%d totalSent=%d writable=%s", data.remaining(), sentBytes.addAndGet(data.remaining()), channel.isWritable());
+			result.complete(null);
 		});
 		return result;
 	}

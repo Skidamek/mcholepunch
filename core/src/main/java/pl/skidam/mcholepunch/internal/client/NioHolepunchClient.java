@@ -48,7 +48,7 @@ public final class NioHolepunchClient {
 	public CompletionStage<HolepunchConnection> connect(HolepunchRequest request, HolepunchRoute resolvedRoute) {
 		CompletableFuture<HolepunchConnection> result = new CompletableFuture<>();
 		long debugId = DebugLog.nextConnectionId();
-		DebugLog.log("CLIENT", debugId, "connect requested host=%s port=%d protocol=%d maxPending=%d", request.host(), request.port(), request.protocolVersion(), request.options().maxPendingWriteBytes());
+		DebugLog.log("CLIENT", debugId, "connect requested host=%s port=%d protocol=%d", request.host(), request.port(), request.protocolVersion());
 		CONNECT_EXECUTOR.execute(() -> {
 			SocketChannel channel = null;
 			try {

@@ -11,7 +11,6 @@ public final class HolepunchOptions {
 	public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 	public static final Duration DEFAULT_NEGOTIATION_TIMEOUT = Duration.ofSeconds(10);
 	public static final Duration DEFAULT_HANDLER_SETUP_TIMEOUT = Duration.ofSeconds(5);
-	public static final long DEFAULT_MAX_PENDING_WRITE_BYTES = 4L * 1024 * 1024;
 	/**
 	 * Forge 1.17+ / NeoForge ClientIntention hostname extra. `ConnectionType.forVersionFlag` treats
 	 * a host that contains this as MODDED with FML protocol 3. It lives here because appending it
@@ -24,7 +23,6 @@ public final class HolepunchOptions {
 	private final String handshakeHostSuffix;
 	private final Duration connectTimeout;
 	private final Duration negotiationTimeout;
-	private final long maxPendingWriteBytes;
 	private final Executor callbackExecutor;
 
 	private HolepunchOptions(Builder builder) {
@@ -32,7 +30,6 @@ public final class HolepunchOptions {
 		handshakeHostSuffix = builder.handshakeHostSuffix;
 		connectTimeout = builder.connectTimeout;
 		negotiationTimeout = builder.negotiationTimeout;
-		maxPendingWriteBytes = builder.maxPendingWriteBytes;
 		callbackExecutor = builder.callbackExecutor;
 	}
 
@@ -56,10 +53,6 @@ public final class HolepunchOptions {
 		return negotiationTimeout;
 	}
 
-	public long maxPendingWriteBytes() {
-		return maxPendingWriteBytes;
-	}
-
 	public Executor callbackExecutor() {
 		return callbackExecutor;
 	}
@@ -69,7 +62,6 @@ public final class HolepunchOptions {
 		private String handshakeHostSuffix = "";
 		private Duration connectTimeout = DEFAULT_CONNECT_TIMEOUT;
 		private Duration negotiationTimeout = DEFAULT_NEGOTIATION_TIMEOUT;
-		private long maxPendingWriteBytes = DEFAULT_MAX_PENDING_WRITE_BYTES;
 		private Executor callbackExecutor = ForkJoinPool.commonPool();
 
 		public Builder username(String username) {
@@ -89,14 +81,6 @@ public final class HolepunchOptions {
 
 		public Builder negotiationTimeout(Duration timeout) {
 			negotiationTimeout = positive(timeout, "negotiationTimeout");
-			return this;
-		}
-
-		public Builder maxPendingWriteBytes(long bytes) {
-			if (bytes <= 0) {
-				throw new IllegalArgumentException("maxPendingWriteBytes must be positive");
-			}
-			maxPendingWriteBytes = bytes;
 			return this;
 		}
 

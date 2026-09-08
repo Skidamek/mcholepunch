@@ -32,20 +32,17 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 		byte[] mask = nonceMask(nonce);
 		long most = 0;
 		long least = 0;
-		int payloadIndex = 0;
-		for (int bit = 127; bit >= 0; bit--) {
-			if (bit == 76 || bit == 77 || bit == 78 || bit == 79) {
+		// The table lists every writable UUID bit, version and variant fields excluded; the fields
+		// below then stamp those two in place, so encode and decode share one layout definition.
+		for (int index = 0; index < PAYLOAD_BIT_POSITIONS.length; index++) {
+			int bit = PAYLOAD_BIT_POSITIONS[index];
+			if (!payloadBit(marker, mask, index)) {
 				continue;
 			}
-			if (bit == 62 || bit == 63) {
-				continue;
-			}
-			if (payloadBit(marker, mask, payloadIndex++)) {
-				if (bit >= 64) {
-					most |= 1L << (bit - 64);
-				} else {
-					least |= 1L << bit;
-				}
+			if (bit >= 64) {
+				most |= 1L << (bit - 64);
+			} else {
+				least |= 1L << bit;
 			}
 		}
 		most = (most & ~(0xFL << 12)) | (4L << 12);

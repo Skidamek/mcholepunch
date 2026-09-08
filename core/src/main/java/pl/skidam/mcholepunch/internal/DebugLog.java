@@ -42,7 +42,7 @@ public final class DebugLog {
 		if (!enabled()) {
 			return;
 		}
-		emit(side, connectionId, message, arguments);
+		emit(side, connectionId, format(message, arguments));
 	}
 
 	public static void failure(String side, long connectionId, String message, Throwable throwable) {
@@ -50,19 +50,21 @@ public final class DebugLog {
 		if (!ENABLED && cleanClose) {
 			return;
 		}
-		emit(side, connectionId, message + ": " + throwable, new Object[0]);
+		emit(side, connectionId, format(message + ": " + throwable));
 		if (ENABLED && throwable != null) {
 			throwable.printStackTrace(System.err);
 		}
 	}
 
-	private static void emit(String side, long connectionId, String rendered, Object... arguments) {
-		String message;
+	private static String format(String message, Object... arguments) {
 		try {
-			message = arguments.length == 0 ? rendered : String.format(Locale.ROOT, rendered, arguments);
+			return arguments.length == 0 ? message : String.format(Locale.ROOT, message, arguments);
 		} catch (Throwable formattingFailure) {
-			message = rendered + " [formatting failed: " + formattingFailure + "]";
+			return message + " [formatting failed: " + formattingFailure + "]";
 		}
+	}
+
+	private static void emit(String side, long connectionId, String message) {
 		long elapsedMillis = Duration.ofNanos(System.nanoTime() - START_NANOS).toMillis();
 		System.err.printf(Locale.ROOT, "[mcholepunch-debug][+%dms][%s][%s-%d] %s%n", elapsedMillis, Thread.currentThread().getName(), side, connectionId, message);
 	}

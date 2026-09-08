@@ -65,14 +65,14 @@ public final class NioHolepunchClient {
 				DebugLog.log("CLIENT", debugId, "connect completed");
 				result.complete(connection);
 			} catch (Throwable throwable) {
-				DebugLog.failure("CLIENT", debugId, "connect failed", throwable);
+				HolepunchFailure failure = throwable instanceof HolepunchFailure holepunchFailure ? holepunchFailure : new HolepunchFailure(HolepunchFailure.Kind.IO, "connection failed", throwable);
+				DebugLog.failure("CLIENT", debugId, "connect failed", failure);
 				if (channel != null) {
 					try {
 						channel.close();
 					} catch (Exception ignored) {
 					}
 				}
-				HolepunchFailure failure = throwable instanceof HolepunchFailure holepunchFailure ? holepunchFailure : new HolepunchFailure(HolepunchFailure.Kind.IO, "connection failed", throwable);
 				result.completeExceptionally(failure);
 			}
 		});

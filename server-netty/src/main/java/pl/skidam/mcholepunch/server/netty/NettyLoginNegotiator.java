@@ -179,7 +179,7 @@ public final class NettyLoginNegotiator {
 		if (connection != null) {
 			connection.closeWith(failure);
 		} else {
-			DebugLog.failure("SERVER", 0, message, cause);
+			DebugLog.failure("SERVER", 0, message, failure);
 			channel.close();
 		}
 	}

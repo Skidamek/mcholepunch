@@ -10,7 +10,13 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
-/** Opt-in transport tracing used to diagnose holepunch connections. */
+import pl.skidam.mcholepunch.HolepunchFailure;
+
+/**
+ * Opt-in transport tracing used to diagnose holepunch connections. Tracing stays opt-in, but a
+ * failure the transport itself produced is always worth one line; only a plain peer close is
+ * quiet unless tracing is on.
+ */
 public final class DebugLog {
 	private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcholepunch.debug", "false"));
 	private static final int PREVIEW_BYTES = Math.max(0, Integer.getInteger("mcholepunch.debug.previewBytes", 16));
@@ -36,24 +42,29 @@ public final class DebugLog {
 		if (!enabled()) {
 			return;
 		}
-		String rendered;
-		try {
-			rendered = arguments.length == 0 ? message : String.format(Locale.ROOT, message, arguments);
-		} catch (Throwable formattingFailure) {
-			rendered = message + " [formatting failed: " + formattingFailure + "]";
-		}
-		long elapsedMillis = Duration.ofNanos(System.nanoTime() - START_NANOS).toMillis();
-		System.err.printf(Locale.ROOT, "[mcholepunch-debug][+%dms][%s][%s-%d] %s%n", elapsedMillis, Thread.currentThread().getName(), side, connectionId, rendered);
+		emit(side, connectionId, message, arguments);
 	}
 
 	public static void failure(String side, long connectionId, String message, Throwable throwable) {
-		if (!enabled()) {
+		boolean cleanClose = throwable instanceof HolepunchFailure failure && failure.kind() == HolepunchFailure.Kind.CLOSED;
+		if (!ENABLED && cleanClose) {
 			return;
 		}
-		log(side, connectionId, "%s: %s", message, throwable);
-		if (throwable != null) {
+		emit(side, connectionId, message + ": " + throwable, new Object[0]);
+		if (ENABLED && throwable != null) {
 			throwable.printStackTrace(System.err);
 		}
+	}
+
+	private static void emit(String side, long connectionId, String rendered, Object... arguments) {
+		String message;
+		try {
+			message = arguments.length == 0 ? rendered : String.format(Locale.ROOT, rendered, arguments);
+		} catch (Throwable formattingFailure) {
+			message = rendered + " [formatting failed: " + formattingFailure + "]";
+		}
+		long elapsedMillis = Duration.ofNanos(System.nanoTime() - START_NANOS).toMillis();
+		System.err.printf(Locale.ROOT, "[mcholepunch-debug][+%dms][%s][%s-%d] %s%n", elapsedMillis, Thread.currentThread().getName(), side, connectionId, message);
 	}
 
 	public static ScheduledFuture<?> watchdog(String side, long connectionId, Supplier<String> state) {

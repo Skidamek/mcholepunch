@@ -28,10 +28,10 @@ final class ClientNegotiation {
 		UUID marker = HolepunchMarker.random(0);
 		ByteBuffer handshake = LoginCodec.handshake(request.protocolVersion(), address.host() + options.handshakeHostSuffix(), address.port());
 		DebugLog.log("CLIENT", debugId, "send handshake %s", DebugLog.preview(handshake));
-		writeFully(channel, handshake);
+		NioHolepunchConnection.writeFully(channel, handshake);
 		ByteBuffer loginStart = LoginCodec.loginStart(username, marker);
 		DebugLog.log("CLIENT", debugId, "send login start username=%s marker=%s %s", username, marker, DebugLog.preview(loginStart));
-		writeFully(channel, loginStart);
+		NioHolepunchConnection.writeFully(channel, loginStart);
 
 		MinecraftFrameReader reader = new MinecraftFrameReader(LoginCodec.MAX_FRAME_BYTES);
 		CipherStreamState decryptor = null;
@@ -44,15 +44,15 @@ final class ClientNegotiation {
 			try {
 				count = channel.read(network);
 			} catch (SocketTimeoutException exception) {
-				throw failure(HolepunchFailure.Kind.TIMEOUT, "negotiation timed out", exception);
+				throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, "negotiation timed out", exception);
 			}
 			if (count < 0) {
-				throw failure(HolepunchFailure.Kind.CLOSED, "server closed during negotiation", null);
+				throw new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "server closed during negotiation", null);
 			}
 			network.flip();
 			DebugLog.log("CLIENT", debugId, "negotiation TCP read bytes=%d encrypted=%s", count, decryptor != null);
 			if (decryptor != null) {
-				network = ByteBuffer.wrap(decryptor.update(readRemaining(network)));
+				network = ByteBuffer.wrap(decryptor.update(NioHolepunchConnection.readRemaining(network)));
 			}
 			for (ByteBuffer frame : reader.feed(network, 1)) {
 				if (decryptor == null) {
@@ -60,12 +60,12 @@ final class ClientNegotiation {
 					try {
 						encryption = LoginCodec.readEncryptionRequest(frame);
 					} catch (IOException exception) {
-						throw failure(HolepunchFailure.Kind.UNEXPECTED_PACKET, "unexpected packet during encryption negotiation", exception);
+						throw new HolepunchFailure(HolepunchFailure.Kind.UNEXPECTED_PACKET, "unexpected packet during encryption negotiation", exception);
 					}
 					DebugLog.log("CLIENT", debugId, "received encryption request publicKey=%d verifyToken=%d shouldAuthenticate=%s", encryption.publicKey().length, encryption.verifyToken().length,
 							encryption.shouldAuthenticate());
 					if (encryption.shouldAuthenticate()) {
-						throw failure(HolepunchFailure.Kind.AUTHENTICATION_REQUESTED, "server requested Mojang authentication", null);
+						throw new HolepunchFailure(HolepunchFailure.Kind.AUTHENTICATION_REQUESTED, "server requested Mojang authentication", null);
 					}
 					PublicKey key = MinecraftCrypt.decodePublicKey(encryption.publicKey());
 					byte[] secret = MinecraftCrypt.newSecret();
@@ -73,30 +73,14 @@ final class ClientNegotiation {
 					byte[] encryptedToken = MinecraftCrypt.rsaEncrypt(key, encryption.verifyToken());
 					ByteBuffer response = LoginCodec.encryptionResponse(encryptedSecret, encryptedToken);
 					DebugLog.log("CLIENT", debugId, "send encryption response %s", DebugLog.preview(response));
-					writeFully(channel, response);
+					NioHolepunchConnection.writeFully(channel, response);
 					decryptor = MinecraftCrypt.decryptor(secret);
 					DebugLog.log("CLIENT", debugId, "encryption negotiation complete");
 					return new Result(secret, decryptor, reader, deadline);
 				}
 			}
 		}
-		throw failure(HolepunchFailure.Kind.TIMEOUT, "negotiation timed out", null);
-	}
-
-	static byte[] readRemaining(ByteBuffer buffer) {
-		byte[] result = new byte[buffer.remaining()];
-		buffer.get(result);
-		return result;
-	}
-
-	static void writeFully(SocketChannel channel, ByteBuffer data) throws IOException {
-		while (data.hasRemaining()) {
-			channel.write(data);
-		}
-	}
-
-	static HolepunchFailure failure(HolepunchFailure.Kind kind, String message, Throwable cause) {
-		return new HolepunchFailure(kind, message, cause);
+		throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, "negotiation timed out", null);
 	}
 
 	record Result(byte[] secret, CipherStreamState decryptor, MinecraftFrameReader frameReader, long deadline) {}

@@ -108,7 +108,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 			}
 			network.flip();
 			DebugLog.log("CLIENT", debugId, "takeover TCP read encryptedBytes=%d", count);
-			ByteBuffer plaintext = ByteBuffer.wrap(encryption.decrypt(ClientNegotiation.readRemaining(network)));
+			ByteBuffer plaintext = ByteBuffer.wrap(encryption.decrypt(readRemaining(network)));
 			for (ByteBuffer frame : frameReader.feed(plaintext, 1)) {
 				try {
 					LoginCodec.readTakeoverQuery(frame);
@@ -195,7 +195,21 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		int encryptedBytes = encryption.encrypt(frame, encryptedOutput);
 		encryptedOutput.flip();
 		DebugLog.log("CLIENT", debugId, "sending kind=DATA plaintext=%d wire=%d rawEra=%s", frame.limit(), encryptedBytes, rawEra);
-		ClientNegotiation.writeFully(channel, encryptedOutput);
+		writeFully(channel, encryptedOutput);
+	}
+
+	/** Reads the buffer's remaining bytes into a fresh array. */
+	static byte[] readRemaining(ByteBuffer buffer) {
+		byte[] result = new byte[buffer.remaining()];
+		buffer.get(result);
+		return result;
+	}
+
+	/** Writes the buffer to the blocking channel in full. */
+	static void writeFully(SocketChannel channel, ByteBuffer data) throws IOException {
+		while (data.hasRemaining()) {
+			channel.write(data);
+		}
 	}
 
 	@Override
@@ -212,7 +226,12 @@ final class NioHolepunchConnection implements HolepunchConnection {
 			}
 			commitResult = new CompletableFuture<>();
 			try {
-				applyTransition(handoff.requestCommit());
+				if (handoff.requestCommit()) {
+					sendFrame(TransportFrameCodec.commit(), false);
+					if (handoff.onCommitSent()) {
+						activateRaw();
+					}
+				}
 			} catch (Throwable throwable) {
 				HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.IO, "commit failed", throwable);
 				fail(failure);
@@ -222,32 +241,24 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		}
 	}
 
-	private void receiveControl(TransportFrame.Type type) {
+	private void receiveControl() {
 		synchronized (writeLock) {
 			if (closed.get() || handoff.isRaw()) {
 				return;
 			}
-			try {
-				// The peer's COMMIT never schedules an outbound frame; when our own is already on
-				// the wire this is the switch that activates the raw era for both directions.
-				applyTransition(handoff.onPeerControlReceived(type));
-			} catch (IOException exception) {
-				fail(new HolepunchFailure(HolepunchFailure.Kind.IO, "failed to acknowledge the transport commit", exception));
+			// The peer's COMMIT never schedules an outbound frame; when our own is already on
+			// the wire this is the switch that activates the raw era for both directions.
+			if (handoff.onPeerCommitReceived()) {
+				activateRaw();
 			}
 		}
 	}
 
-	/** Applies a transition synchronously: sends its outbound controls, then their follow-ups, then flips the raw era. */
-	private void applyTransition(TransportHandoff.Transition transition) throws IOException {
-		for (TransportFrame.Type type : transition.outbound()) {
-			sendFrame(TransportFrameCodec.commit(), false);
-			applyTransition(handoff.onLocalControlSent(type));
-		}
-		if (transition.activatedRaw()) {
-			encryption.activateRaw();
-			DebugLog.log("CLIENT", debugId, "transport switched to raw pass-through");
-		}
-		completeTransition(transition);
+	/** Flips the cipher and any committer to the raw era; called exactly once, when both COMMITs have crossed. */
+	private void activateRaw() {
+		encryption.activateRaw();
+		DebugLog.log("CLIENT", debugId, "transport switched to raw pass-through");
+		if (commitResult != null) commitResult.complete(null);
 	}
 
 	private void readLoop() {
@@ -283,7 +294,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		for (TransportFrame frame : frames) {
 			switch (frame.type()) {
 				case DATA -> delivered = handleData(frame.payload());
-				case COMMIT -> receiveControl(frame.type());
+				case COMMIT -> receiveControl();
 			}
 		}
 		if (delivered != null) {
@@ -384,12 +395,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				readsPaused = false;
 				readFlow.notifyAll();
 			}
-		}
-	}
-
-	private void completeTransition(TransportHandoff.Transition transition) {
-		if (transition.activatedRaw() && commitResult != null) {
-			commitResult.complete(null);
 		}
 	}
 

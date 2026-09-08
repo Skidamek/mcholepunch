@@ -4,22 +4,18 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-import java.util.List;
-
 import org.junit.jupiter.api.Test;
-
-import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 
 class TransportHandoffTest {
 	@Test
 	void flipsOnlyAfterBothCommitFramesCross() {
 		TransportHandoff handoff = new TransportHandoff();
 
-		assertEquals(List.of(TransportFrame.Type.COMMIT), handoff.requestCommit().outbound());
+		assertTrue(handoff.requestCommit());
 		assertTrue(handoff.isCommitting());
-		assertFalse(handoff.onLocalControlSent(TransportFrame.Type.COMMIT).activatedRaw());
+		assertFalse(handoff.onCommitSent());
 		assertFalse(handoff.isRaw());
-		assertTrue(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).activatedRaw());
+		assertTrue(handoff.onPeerCommitReceived());
 		assertTrue(handoff.isRaw());
 		assertFalse(handoff.isCommitting());
 	}
@@ -28,11 +24,11 @@ class TransportHandoffTest {
 	void peerCommitAloneDoesNotFlipUntilLocalCommits() {
 		TransportHandoff handoff = new TransportHandoff();
 
-		assertFalse(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).activatedRaw());
+		assertFalse(handoff.onPeerCommitReceived());
 		assertFalse(handoff.isCommitting(), "the peer's intent must not block local writes");
 
-		assertEquals(List.of(TransportFrame.Type.COMMIT), handoff.requestCommit().outbound());
-		assertTrue(handoff.onLocalControlSent(TransportFrame.Type.COMMIT).activatedRaw());
+		assertTrue(handoff.requestCommit());
+		assertTrue(handoff.onCommitSent());
 		assertTrue(handoff.isRaw());
 	}
 
@@ -40,21 +36,21 @@ class TransportHandoffTest {
 	void requestCommitIsIdempotent() {
 		TransportHandoff handoff = new TransportHandoff();
 
-		assertEquals(List.of(TransportFrame.Type.COMMIT), handoff.requestCommit().outbound());
-		assertEquals(List.of(), handoff.requestCommit().outbound());
-		assertTrue(handoff.onLocalControlSent(TransportFrame.Type.COMMIT).outbound().isEmpty());
-		assertEquals(List.of(), handoff.requestCommit().outbound());
+		assertTrue(handoff.requestCommit());
+		assertFalse(handoff.requestCommit());
+		assertFalse(handoff.onCommitSent());
+		assertFalse(handoff.requestCommit());
 	}
 
 	@Test
 	void controlFramesAreIgnoredAfterTheFlip() {
 		TransportHandoff handoff = new TransportHandoff();
 		handoff.requestCommit();
-		handoff.onLocalControlSent(TransportFrame.Type.COMMIT);
-		assertTrue(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).activatedRaw());
+		handoff.onCommitSent();
+		assertTrue(handoff.onPeerCommitReceived());
 
-		assertTrue(handoff.onPeerControlReceived(TransportFrame.Type.COMMIT).outbound().isEmpty());
-		assertTrue(handoff.requestCommit().outbound().isEmpty());
+		assertFalse(handoff.onPeerCommitReceived());
+		assertFalse(handoff.requestCommit());
 	}
 
 	@Test
@@ -65,10 +61,10 @@ class TransportHandoffTest {
 		handoff.requestCommit();
 		assertEquals(TransportHandoff.Phase.COMMITTING, handoff.phase());
 
-		handoff.onLocalControlSent(TransportFrame.Type.COMMIT);
+		handoff.onCommitSent();
 		assertEquals(TransportHandoff.Phase.COMMITTING, handoff.phase());
 
-		handoff.onPeerControlReceived(TransportFrame.Type.COMMIT);
+		handoff.onPeerCommitReceived();
 		assertEquals(TransportHandoff.Phase.RAW, handoff.phase());
 	}
 }

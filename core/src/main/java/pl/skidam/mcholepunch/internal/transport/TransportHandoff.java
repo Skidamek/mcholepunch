@@ -1,9 +1,5 @@
 package pl.skidam.mcholepunch.internal.transport;
 
-import java.util.List;
-
-import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
-
 /**
  * Coordinates the encrypted-to-raw transport handoff without knowing what the raw stream
  * contains. The state is shared by the NIO and Netty adapters so that the wire-ordering rules do
@@ -19,34 +15,45 @@ public final class TransportHandoff {
 	private boolean peerCommitReceived;
 	private boolean raw;
 
-	public Transition requestCommit() {
+	/** Whether the caller must send the COMMIT control frame; false when a commit is already in flight or the raw era has started. */
+	public boolean requestCommit() {
 		synchronized (this) {
 			if (raw || localCommitRequested) {
-				return Transition.empty();
+				return false;
 			}
 			localCommitRequested = true;
-			return new Transition(List.of(TransportFrame.Type.COMMIT), false);
+			return true;
 		}
 	}
 
-	public Transition onLocalControlSent(TransportFrame.Type type) {
+	/** Whether the raw era starts now, called after our COMMIT reached the wire. */
+	public boolean onCommitSent() {
 		synchronized (this) {
-			if (raw || type != TransportFrame.Type.COMMIT) {
-				return Transition.empty();
+			if (raw) {
+				return false;
 			}
 			localCommitSent = true;
-			return transition(List.of());
+			return activateWhenBothCommitted();
 		}
 	}
 
-	public Transition onPeerControlReceived(TransportFrame.Type type) {
+	/** Whether the raw era starts now, called when the peer's COMMIT arrived. */
+	public boolean onPeerCommitReceived() {
 		synchronized (this) {
-			if (raw || type != TransportFrame.Type.COMMIT) {
-				return Transition.empty();
+			if (raw) {
+				return false;
 			}
 			peerCommitReceived = true;
-			return transition(List.of());
+			return activateWhenBothCommitted();
 		}
+	}
+
+	private boolean activateWhenBothCommitted() {
+		if (localCommitSent && peerCommitReceived) {
+			raw = true;
+			return true;
+		}
+		return false;
 	}
 
 	/** Whether a commit is in flight: writes are rejected here because they can no longer land in either era correctly. */
@@ -70,23 +77,9 @@ public final class TransportHandoff {
 		}
 	}
 
-	private Transition transition(List<TransportFrame.Type> outbound) {
-		boolean activate = !raw && localCommitSent && peerCommitReceived;
-		if (activate) {
-			raw = true;
-		}
-		return new Transition(List.copyOf(outbound), activate);
-	}
-
 	public enum Phase {
 		INITIAL,
 		COMMITTING,
 		RAW
-	}
-
-	public record Transition(List<TransportFrame.Type> outbound, boolean activatedRaw) {
-		private static Transition empty() {
-			return new Transition(List.of(), false);
-		}
 	}
 }

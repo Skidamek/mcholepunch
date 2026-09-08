@@ -165,21 +165,21 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport framer is not installed", null));
 				return;
 			}
-			TransportHandoff.Transition transition = handoff.requestCommit();
-			applyTransition(transition);
-			completeTransition(transition);
+			if (handoff.requestCommit()) {
+				writeCommitControl();
+			}
 		});
 		return result;
 	}
 
-	void receiveControl(TransportFrame.Type type) {
+	void receiveControl() {
 		executeOnEventLoop(() -> {
 			if (closed.get() || handoff.isRaw()) {
 				return;
 			}
-			TransportHandoff.Transition transition = handoff.onPeerControlReceived(type);
-			applyTransition(transition);
-			completeTransition(transition);
+			if (handoff.onPeerCommitReceived()) {
+				activateRaw();
+			}
 		});
 	}
 
@@ -196,27 +196,18 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 				closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "control write failed", completed.cause()));
 				return;
 			}
-			TransportHandoff.Transition transition = handoff.onLocalControlSent(TransportFrame.Type.COMMIT);
-			applyTransition(transition);
-			completeTransition(transition);
+			if (handoff.onCommitSent()) {
+				activateRaw();
+			}
 		});
 	}
 
-	private void applyTransition(TransportHandoff.Transition transition) {
-		for (TransportFrame.Type type : transition.outbound()) {
-			writeCommitControl();
-		}
-		if (transition.activatedRaw()) {
-			encryption.activateRaw();
-			DebugLog.log("SERVER", debugId, "transport switched to raw pass-through");
-		}
-	}
-
-	private void completeTransition(TransportHandoff.Transition transition) {
-		if (transition.activatedRaw()) {
-			CompletableFuture<Void> result = commitResult.get();
-			if (result != null) result.complete(null);
-		}
+	/** Flips the cipher and any committer to the raw era; called exactly once, when both COMMITs have crossed. */
+	private void activateRaw() {
+		encryption.activateRaw();
+		DebugLog.log("SERVER", debugId, "transport switched to raw pass-through");
+		CompletableFuture<Void> result = commitResult.get();
+		if (result != null) result.complete(null);
 	}
 
 	@Override

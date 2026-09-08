@@ -243,27 +243,14 @@ class NioHolepunchConnectionEndToEndTest {
 								clientData.add(new String(frame.payload(), StandardCharsets.UTF_8));
 								clientDataLatch.countDown();
 							}
-							case COMMIT -> sendOutbound(channel, apply(handoff.onPeerControlReceived(frame.type())));
+							case COMMIT -> {
+								if (handoff.onPeerCommitReceived()) {
+									encryption.activateRaw();
+								}
+							}
 						}
 					}
 				}
-			}
-		}
-
-		private TransportHandoff.Transition apply(TransportHandoff.Transition transition) {
-			if (transition.activatedRaw()) {
-				encryption.activateRaw();
-			}
-			return transition;
-		}
-
-		private void sendOutbound(SocketChannel channel, TransportHandoff.Transition transition) throws IOException {
-			for (TransportFrame.Type type : transition.outbound()) {
-				writeEncrypted(channel, switch (type) {
-					case COMMIT -> TransportFrameCodec.commit();
-					case DATA -> throw new IllegalArgumentException("controls only");
-				});
-				sendOutbound(channel, apply(handoff.onLocalControlSent(type)));
 			}
 		}
 
@@ -289,7 +276,12 @@ class NioHolepunchConnectionEndToEndTest {
 
 		synchronized void commit() throws IOException {
 			awaitServerReady();
-			sendOutbound(channel, apply(handoff.requestCommit()));
+			if (handoff.requestCommit()) {
+				writeEncrypted(channel, TransportFrameCodec.commit());
+				if (handoff.onCommitSent()) {
+					encryption.activateRaw();
+				}
+			}
 		}
 
 		synchronized void writeRaw(byte[] bytes) throws IOException {

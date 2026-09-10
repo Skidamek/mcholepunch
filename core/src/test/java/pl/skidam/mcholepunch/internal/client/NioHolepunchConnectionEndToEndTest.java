@@ -237,7 +237,7 @@ class NioHolepunchConnectionEndToEndTest {
 						rawClientDataLatch.countDown();
 						continue;
 					}
-					for (TransportFrame frame : feed.feed(network)) {
+					feed.feed(network, frame -> {
 						switch (frame.type()) {
 							case DATA -> {
 								clientData.add(new String(frame.payload(), StandardCharsets.UTF_8));
@@ -249,7 +249,7 @@ class NioHolepunchConnectionEndToEndTest {
 								}
 							}
 						}
-					}
+					});
 				}
 			}
 		}

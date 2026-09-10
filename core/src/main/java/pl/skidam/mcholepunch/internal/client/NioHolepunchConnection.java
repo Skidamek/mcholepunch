@@ -7,6 +7,7 @@ import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.security.GeneralSecurityException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
@@ -289,15 +290,14 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	}
 
 	private void processTransportPlaintext(ByteBuffer encryptedInput) throws IOException {
-		CompletionStage<Void> delivered = null;
-		List<TransportFrame> frames = transportFeed.feed(encryptedInput);
-		for (TransportFrame frame : frames) {
+		List<CompletionStage<Void>> deliveries = new ArrayList<>(2);
+		transportFeed.feed(encryptedInput, frame -> {
 			switch (frame.type()) {
-				case DATA -> delivered = handleData(frame.payload());
+				case DATA -> deliveries.add(handleData(frame.payload()));
 				case COMMIT -> receiveControl();
 			}
-		}
-		if (delivered != null) {
+		});
+		for (CompletionStage<Void> delivered : deliveries) {
 			awaitRead(delivered);
 		}
 	}

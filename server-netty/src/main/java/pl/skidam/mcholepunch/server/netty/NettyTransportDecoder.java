@@ -34,7 +34,7 @@ public final class NettyTransportDecoder extends ByteToMessageDecoder {
 			}
 			for (ByteBuffer source : input.nioBuffers(input.readerIndex(), input.readableBytes())) {
 				try {
-					for (TransportFrame frame : feed.feed(source)) {
+					feed.feed(source, frame -> {
 						switch (frame.type()) {
 							case DATA -> {
 								byte[] payload = frame.payload();
@@ -44,7 +44,7 @@ public final class NettyTransportDecoder extends ByteToMessageDecoder {
 							}
 							case COMMIT -> connection.receiveControl();
 						}
-					}
+					});
 				} catch (IOException exception) {
 					throw new DecoderException("invalid mcholepunch transport frame", exception);
 				}

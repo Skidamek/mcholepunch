@@ -2,8 +2,7 @@ package pl.skidam.mcholepunch.internal.transport;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.function.Consumer;
 
 import pl.skidam.mcholepunch.internal.crypto.TransportEncryption;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
@@ -11,9 +10,12 @@ import pl.skidam.mcholepunch.internal.protocol.TransportFrameReader;
 
 /**
  * Decrypts the encrypted transport and reassembles its frames. Shared by the NIO client loop and
- * the Netty server decoder so the wire-ordering rules cannot drift between the two adapters. Once
- * the raw switch has happened, {@link #feed} consumes nothing and the caller passes the remaining
- * bytes through untouched.
+ * the Netty server decoder so the wire-ordering rules cannot drift between the two adapters. Each
+ * frame is handed to {@code frames} the moment it completes, because a COMMIT may flip the era
+ * mid-buffer: the peer starts its raw stream right after its own COMMIT, so that COMMIT and raw
+ * bytes can share one TCP segment, and once the flip lands the rest of the segment belongs to the
+ * raw stream untouched. Once the raw switch has happened, {@link #feed} consumes nothing and the
+ * caller passes the remaining bytes through untouched.
  */
 public final class TransportFeed {
 	private final TransportEncryption encryption;
@@ -30,8 +32,7 @@ public final class TransportFeed {
 	}
 
 	/** Decrypts and frames what the encrypted transport owns, advancing the buffer position past the consumed bytes. */
-	public List<TransportFrame> feed(ByteBuffer encryptedInput) throws IOException {
-		List<TransportFrame> frames = new ArrayList<>();
+	public void feed(ByteBuffer encryptedInput, Consumer<TransportFrame> frames) throws IOException {
 		while (!encryption.isRaw() && encryptedInput.hasRemaining()) {
 			int encryptedBytes = reader.maximumInputBytes(encryptedInput.remaining());
 			if (plaintext.capacity() < encryptedBytes) {
@@ -47,8 +48,9 @@ public final class TransportFeed {
 				throw new IOException("transport cipher changed length from " + encryptedBytes + " to " + plaintextBytes);
 			}
 			plaintext.flip();
-			frames.addAll(reader.feed(plaintext));
+			for (TransportFrame frame : reader.feed(plaintext)) {
+				frames.accept(frame);
+			}
 		}
-		return frames;
 	}
 }

@@ -2,6 +2,8 @@ package pl.skidam.mcholepunch.server.netty;
 
 import java.security.KeyPair;
 import java.util.Optional;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
@@ -26,6 +28,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 
 	private final KeyPair keyPair;
 	private ByteBuf handshake;
+	private ScheduledFuture<?> heldHandshakeExpiry;
 
 	/** Installs the claim handler after the vanilla frame decoder, before vanilla can own the login. */
 	public static void install(ChannelPipeline pipeline, KeyPair keyPair) {
@@ -49,6 +52,13 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 				return;
 			}
 			handshake = frame;
+			// Vanilla owns no listener for a withheld handshake, so nothing ticks this channel: without
+			// the fuse a claimant that stalls after its Login Intention pins the socket forever. A
+			// marker client answers with its Login Start immediately, so the same one-step budget the
+			// negotiator grants the encryption response is generous past any honest round trip.
+			heldHandshakeExpiry = ctx.executor().schedule(() -> {
+				ctx.close();
+			}, NettyLoginNegotiator.DEFAULT_RESPONSE_TIMEOUT.toNanos(), TimeUnit.NANOSECONDS);
 			return;
 		}
 
@@ -82,6 +92,17 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 	public void channelInactive(ChannelHandlerContext ctx) throws Exception {
 		releaseHeld();
 		super.channelInactive(ctx);
+	}
+
+	@Override
+	public void handlerRemoved(ChannelHandlerContext ctx) throws Exception {
+		cancelHeldHandshakeExpiry();
+		super.handlerRemoved(ctx);
+	}
+
+	private void cancelHeldHandshakeExpiry() {
+		ScheduledFuture<?> expiry = heldHandshakeExpiry;
+		if (expiry != null) expiry.cancel(false);
 	}
 
 	private void forwardAndRemove(ChannelHandlerContext ctx, Object msg) {

@@ -82,7 +82,9 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	@Override
 	public void write(ChannelHandlerContext context, Object message, ChannelPromise promise) throws Exception {
 		if (!(message instanceof ByteBuf input)) {
-			// A packet-shaped write from leftover vanilla state must not fail the connection.
+			// A packet-shaped write from leftover vanilla state must not fail the connection, but silent
+			// success is how a stale write goes unnoticed, so leave a receipt when it happens.
+			DebugLog.log("SERVER", debugId, "dropping non-buffer write %s", message.getClass().getName());
 			ReferenceCountUtil.release(message);
 			promise.setSuccess();
 			return;

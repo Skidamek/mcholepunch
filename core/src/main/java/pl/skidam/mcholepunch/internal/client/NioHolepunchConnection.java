@@ -6,21 +6,22 @@ import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.security.GeneralSecurityException;
-import java.util.ArrayDeque;
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import pl.skidam.mcholepunch.HolepunchConnection;
 import pl.skidam.mcholepunch.HolepunchFailure;
@@ -51,7 +52,8 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private final MinecraftFrameReader frameReader;
 	private final TransportFeed transportFeed;
 	private final ExecutorService readerExecutor;
-	private final Object writeLock = new Object();
+	private final ExecutorService writerExecutor;
+	private final Queue<CompletableFuture<Void>> pendingWrites = new ConcurrentLinkedQueue<>();
 	private final AtomicBoolean closed = new AtomicBoolean();
 	private final AtomicBoolean openSucceeded = new AtomicBoolean();
 	private final AtomicLong receivedBytes = new AtomicLong();
@@ -64,7 +66,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private byte[] initialDataSnapshot = new byte[0];
 	private ByteBuffer encryptedOutput = ByteBuffer.allocate(8192);
 	private final TransportHandoff handoff = new TransportHandoff();
-	private CompletableFuture<Void> commitResult;
+	private final AtomicReference<CompletableFuture<Void>> commitResult = new AtomicReference<>();
 
 	private NioHolepunchConnection(long debugId, SocketChannel channel, HolepunchRequest request, ClientNegotiation.Result result) throws GeneralSecurityException {
 		this.debugId = debugId;
@@ -77,6 +79,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		this.frameReader = result.frameReader();
 		this.transportFeed = new TransportFeed(encryption, new TransportFrameReader(TransportFrame.MAX_FRAME_BYTES));
 		this.readerExecutor = Executors.newSingleThreadExecutor(runnable -> daemon(runnable, "mcholepunch-reader"));
+		this.writerExecutor = Executors.newSingleThreadExecutor(runnable -> daemon(runnable, "mcholepunch-writer"));
 		this.watchdog = DebugLog.watchdog("CLIENT", debugId, this::debugState);
 	}
 
@@ -168,34 +171,51 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (size == 0) {
 			return CompletableFuture.completedFuture(null);
 		}
-		// The blocked caller is the write backpressure: there is no queue to overflow, so the
-		// old pending-write limit has no synchronous-era equivalent.
-		synchronized (writeLock) {
+		if (closed.get()) {
+			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+		}
+		if (handoff.isCommitting()) {
+			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
+		}
+		CompletableFuture<Void> result = new CompletableFuture<>();
+		pendingWrites.add(result);
+		try {
+			// The blocking socket write runs on the writer thread so the returned future completes only
+			// once the bytes reached the wire; a caller bounding its wait (HolepunchSocket does) gets a
+			// deadline that can actually fire instead of a synchronous write the bound never observes.
+			writerExecutor.execute(() -> deliverWrite(copy, size, result));
+		} catch (RejectedExecutionException rejected) {
+			pendingWrites.remove(result);
+			result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+		}
+		return result;
+	}
+
+	private void deliverWrite(ByteBuffer data, int size, CompletableFuture<Void> result) {
+		try {
 			if (closed.get()) {
-				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+				return;
 			}
-			if (handoff.isCommitting()) {
-				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
-			}
-			try {
-				sendFrame(handoff.isRaw() ? copy : TransportFrameCodec.data(copy), handoff.isRaw());
-				DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d", size, sentBytes.addAndGet(size));
-				return CompletableFuture.completedFuture(null);
-			} catch (Throwable throwable) {
-				HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", throwable);
-				fail(failure);
-				return CompletableFuture.failedFuture(failure);
-			}
+			sendFrame(handoff.isRaw() ? data : TransportFrameCodec.data(data));
+			DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d", size, sentBytes.addAndGet(size));
+			result.complete(null);
+		} catch (Throwable throwable) {
+			HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", throwable);
+			result.completeExceptionally(failure);
+			fail(failure);
+		} finally {
+			pendingWrites.remove(result);
 		}
 	}
 
-	/** Encrypts and writes one frame; the caller holds {@link #writeLock}, which confines the stateful cipher and the reuse buffer. */
-	private void sendFrame(ByteBuffer frame, boolean rawEra) throws IOException {
+	/** Encrypts and writes one frame; runs only on the writer thread, which confines the stateful cipher and the reuse buffer. */
+	private void sendFrame(ByteBuffer frame) throws IOException {
 		ensureEncryptedCapacity(frame.remaining());
 		encryptedOutput.clear();
 		int encryptedBytes = encryption.encrypt(frame, encryptedOutput);
 		encryptedOutput.flip();
-		DebugLog.log("CLIENT", debugId, "sending kind=DATA plaintext=%d wire=%d rawEra=%s", frame.limit(), encryptedBytes, rawEra);
+		DebugLog.log("CLIENT", debugId, "sending kind=DATA plaintext=%d wire=%d rawEra=%s", frame.limit(), encryptedBytes, handoff.isRaw());
 		writeFully(channel, encryptedOutput);
 	}
 
@@ -215,43 +235,52 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	@Override
 	public CompletionStage<Void> commitTransportUpgrade() {
-		synchronized (writeLock) {
-			if (closed.get()) {
-				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
-			}
-			if (handoff.isRaw()) {
-				return CompletableFuture.completedFuture(null);
-			}
-			if (commitResult != null) {
-				return commitResult;
-			}
-			commitResult = new CompletableFuture<>();
-			try {
-				if (handoff.requestCommit()) {
-					sendFrame(TransportFrameCodec.commit(), false);
-					if (handoff.onCommitSent()) {
-						activateRaw();
-					}
-				}
-			} catch (Throwable throwable) {
-				HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.IO, "commit failed", throwable);
-				fail(failure);
-				return CompletableFuture.failedFuture(failure);
-			}
-			return commitResult;
+		if (closed.get()) {
+			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
 		}
+		if (handoff.isRaw()) {
+			return CompletableFuture.completedFuture(null);
+		}
+		CompletableFuture<Void> existing = commitResult.get();
+		if (existing != null) {
+			return existing;
+		}
+		CompletableFuture<Void> result = new CompletableFuture<>();
+		if (!commitResult.compareAndSet(null, result)) {
+			return commitResult.get();
+		}
+		if (handoff.requestCommit()) {
+			// Writer-queue FIFO is what keeps the eras exact: every write enqueued before the COMMIT
+			// task carries an encrypted frame, everything after the flip goes out raw.
+			try {
+				writerExecutor.execute(() -> {
+					try {
+						if (closed.get()) {
+							return;
+						}
+						sendFrame(TransportFrameCodec.commit());
+						if (handoff.onCommitSent()) {
+							activateRaw();
+						}
+					} catch (Throwable throwable) {
+						fail(new HolepunchFailure(HolepunchFailure.Kind.IO, "commit failed", throwable));
+					}
+				});
+			} catch (RejectedExecutionException rejected) {
+				fail(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+			}
+		}
+		return result;
 	}
 
 	private void receiveControl() {
-		synchronized (writeLock) {
-			if (closed.get() || handoff.isRaw()) {
-				return;
-			}
-			// The peer's COMMIT never schedules an outbound frame; when our own is already on
-			// the wire this is the switch that activates the raw era for both directions.
-			if (handoff.onPeerCommitReceived()) {
-				activateRaw();
-			}
+		if (closed.get() || handoff.isRaw()) {
+			return;
+		}
+		// The peer's COMMIT never schedules an outbound frame; when our own is already on
+		// the wire this is the switch that activates the raw era for both directions.
+		if (handoff.onPeerCommitReceived()) {
+			activateRaw();
 		}
 	}
 
@@ -259,7 +288,8 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private void activateRaw() {
 		encryption.activateRaw();
 		DebugLog.log("CLIENT", debugId, "transport switched to raw pass-through");
-		if (commitResult != null) commitResult.complete(null);
+		CompletableFuture<Void> result = commitResult.get();
+		if (result != null) result.complete(null);
 	}
 
 	private void readLoop() {
@@ -413,12 +443,18 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		synchronized (readFlow) {
 			readFlow.notifyAll();
 		}
+		CompletableFuture<Void> pending;
+		while ((pending = pendingWrites.poll()) != null) {
+			pending.completeExceptionally(failure);
+		}
 		try {
 			channel.close();
 		} catch (IOException exception) {
 			failure.addSuppressed(exception);
 		}
-		if (commitResult != null) commitResult.completeExceptionally(failure);
+		CompletableFuture<Void> commit = commitResult.get();
+		if (commit != null) commit.completeExceptionally(failure);
+		writerExecutor.shutdownNow();
 		readerExecutor.shutdownNow();
 		callbackExecutor.execute(() -> handler.onClosed(failure));
 	}

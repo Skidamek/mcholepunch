@@ -10,14 +10,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
 import pl.skidam.mcholepunch.HolepunchFailure;
 
 /**
- * Opt-in transport tracing used to diagnose holepunch connections. Tracing stays opt-in, but a
- * failure the transport itself produced is always worth one line; only a plain peer close is
- * quiet unless tracing is on.
+ * Opt-in transport tracing used to diagnose holepunch connections. Tracing is enabled with the
+ * {@code mcholepunch.debug} system property and logs at info under the "mcholepunch" log4j
+ * logger, so it lands in the host's logs without any logging configuration; Minecraft and every
+ * loader provide log4j themselves. Without tracing, only a failure the transport itself produced
+ * stays visible, as one warn line; a plain peer close is quiet.
  */
 public final class DebugLog {
+	private static final Logger LOGGER = LogManager.getLogger("mcholepunch");
 	private static final boolean ENABLED = Boolean.parseBoolean(System.getProperty("mcholepunch.debug", "false"));
 	private static final int PREVIEW_BYTES = Math.max(0, Integer.getInteger("mcholepunch.debug.previewBytes", 16));
 	private static final long START_NANOS = System.nanoTime();
@@ -42,7 +48,7 @@ public final class DebugLog {
 		if (!enabled()) {
 			return;
 		}
-		emit(side, connectionId, format(message, arguments));
+		LOGGER.info(prefix(side, connectionId) + " " + format(message, arguments));
 	}
 
 	public static void failure(String side, long connectionId, String message, Throwable throwable) {
@@ -50,10 +56,18 @@ public final class DebugLog {
 		if (!ENABLED && cleanClose) {
 			return;
 		}
-		emit(side, connectionId, format(message + ": " + throwable));
-		if (ENABLED && throwable != null) {
-			throwable.printStackTrace(System.err);
+		String line = prefix(side, connectionId) + " " + format(message + ": " + throwable);
+		if (ENABLED) {
+			LOGGER.info(line, throwable);
+			return;
 		}
+		LOGGER.warn(line);
+	}
+
+	/** Shared line header keeping the elapsed stamp, thread, and connection identity grep-friendly across log sinks. */
+	private static String prefix(String side, long connectionId) {
+		long elapsedMillis = Duration.ofNanos(System.nanoTime() - START_NANOS).toMillis();
+		return "[+" + elapsedMillis + "ms][" + Thread.currentThread().getName() + "][" + side + "-" + connectionId + "]";
 	}
 
 	private static String format(String message, Object... arguments) {
@@ -62,11 +76,6 @@ public final class DebugLog {
 		} catch (Throwable formattingFailure) {
 			return message + " [formatting failed: " + formattingFailure + "]";
 		}
-	}
-
-	private static void emit(String side, long connectionId, String message) {
-		long elapsedMillis = Duration.ofNanos(System.nanoTime() - START_NANOS).toMillis();
-		System.err.printf(Locale.ROOT, "[mcholepunch-debug][+%dms][%s][%s-%d] %s%n", elapsedMillis, Thread.currentThread().getName(), side, connectionId, message);
 	}
 
 	public static ScheduledFuture<?> watchdog(String side, long connectionId, Supplier<String> state) {

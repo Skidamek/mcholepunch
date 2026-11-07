@@ -13,14 +13,9 @@ public final class HolepunchClient {
 		return new NioHolepunchClient().resolve(host, port);
 	}
 
-	public static CompletionStage<HolepunchConnection> connect(String host, int port, int protocolVersion, HolepunchHandler handler, HolepunchOptions options) {
-		Objects.requireNonNull(options, "options");
-		return new NioHolepunchClient().connect(new HolepunchRequest(host, port, protocolVersion, handler, options));
-	}
-
 	public static CompletionStage<HolepunchConnection> connect(HolepunchRoute route, int protocolVersion, HolepunchHandler handler, HolepunchOptions options) {
 		Objects.requireNonNull(route, "route");
 		Objects.requireNonNull(options, "options");
-		return new NioHolepunchClient().connect(new HolepunchRequest(route.host(), route.port(), protocolVersion, handler, options), route);
+		return new NioHolepunchClient().connect(new HolepunchRequest(route, protocolVersion, handler, options));
 	}
 }

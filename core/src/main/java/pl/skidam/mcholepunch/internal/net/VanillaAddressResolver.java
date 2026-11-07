@@ -53,7 +53,7 @@ public class VanillaAddressResolver {
 		if (literalHost) {
 			address = patchLiteralAddress(address);
 		}
-		return new HolepunchRoute(normalizedHost, port, new InetSocketAddress(address, selectedPort));
+		return HolepunchRoute.at(normalizedHost, port, new InetSocketAddress(address, selectedPort));
 	}
 
 	private static InetAddress patchLiteralAddress(InetAddress address) throws UnknownHostException {

@@ -31,13 +31,13 @@ class VanillaAddressResolverTest {
 		HolepunchRoute scopedIpv6 = resolver.resolve("fe80::1%1", 25565);
 
 		assertFalse(srvLookup.get());
-		assertEquals("192.0.2.1", mappedIpv6.socketAddress().getAddress().getHostAddress());
-		assertEquals("127.0.0.1", ipv4.socketAddress().getHostString());
-		assertEquals(ipv4.socketAddress().getAddress().getHostAddress(), ipv4.socketAddress().getAddress().getHostName());
-		assertTrue(ipv6.socketAddress().getAddress().getHostAddress().endsWith(":1"));
-		assertEquals(ipv6.socketAddress().getAddress().getHostAddress(), ipv6.socketAddress().getAddress().getHostName());
-		assertEquals(1, ((Inet6Address) scopedIpv6.socketAddress().getAddress()).getScopeId());
-		assertEquals(scopedIpv6.socketAddress().getAddress().getHostAddress(), scopedIpv6.socketAddress().getAddress().getHostName());
+		assertEquals("192.0.2.1", mappedIpv6.transportAddress().getAddress().getHostAddress());
+		assertEquals("127.0.0.1", ipv4.transportAddress().getHostString());
+		assertEquals(ipv4.transportAddress().getAddress().getHostAddress(), ipv4.transportAddress().getAddress().getHostName());
+		assertTrue(ipv6.transportAddress().getAddress().getHostAddress().endsWith(":1"));
+		assertEquals(ipv6.transportAddress().getAddress().getHostAddress(), ipv6.transportAddress().getAddress().getHostName());
+		assertEquals(1, ((Inet6Address) scopedIpv6.transportAddress().getAddress()).getScopeId());
+		assertEquals(scopedIpv6.transportAddress().getAddress().getHostAddress(), scopedIpv6.transportAddress().getAddress().getHostName());
 	}
 
 	@Test
@@ -76,9 +76,9 @@ class VanillaAddressResolverTest {
 
 		HolepunchRoute resolved = resolver.resolve(" minecraft.example ", 25565);
 
-		assertEquals("minecraft.example", resolved.host());
-		assertEquals(25565, resolved.port());
-		assertEquals(25566, resolved.socketAddress().getPort());
-		assertEquals("127.0.0.1", resolved.socketAddress().getAddress().getHostAddress());
+		assertEquals("minecraft.example", resolved.handshakeHost());
+		assertEquals(25565, resolved.handshakePort());
+		assertEquals(25566, resolved.transportAddress().getPort());
+		assertEquals("127.0.0.1", resolved.transportAddress().getAddress().getHostAddress());
 	}
 }

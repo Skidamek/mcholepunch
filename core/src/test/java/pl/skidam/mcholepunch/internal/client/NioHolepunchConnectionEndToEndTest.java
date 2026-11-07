@@ -82,7 +82,7 @@ class NioHolepunchConnectionEndToEndTest {
 		try (TestServer server = new TestServer()) {
 			server.start();
 			HolepunchRoute route = server.route();
-			HolepunchRequest request = new HolepunchRequest(route.host(), route.port(), 763, handler, HolepunchOptions.builder().build());
+			HolepunchRequest request = new HolepunchRequest(route, 763, handler, HolepunchOptions.builder().build());
 			NioHolepunchClient client = new NioHolepunchClient(new VanillaAddressResolver() {
 				@Override
 				public HolepunchRoute resolve(String host, int port) {
@@ -90,7 +90,7 @@ class NioHolepunchConnectionEndToEndTest {
 				}
 			});
 
-			HolepunchConnection connection = client.connect(request, route).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			HolepunchConnection connection = client.connect(request).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
 			assertEquals(16, connection.transportSecret().length, "the negotiated transport secret must reach the application");
 
 			server.writeTransportData(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)));
@@ -154,7 +154,7 @@ class NioHolepunchConnectionEndToEndTest {
 		}
 
 		HolepunchRoute route() {
-			return new HolepunchRoute("server.test", 25565, (InetSocketAddress) listener.socket().getLocalSocketAddress());
+			return HolepunchRoute.at("server.test", 25565, (InetSocketAddress) listener.socket().getLocalSocketAddress());
 		}
 
 		void start() {

@@ -34,6 +34,10 @@ HolepunchConnection connection = HolepunchClient.connect(
 AutoModpack uses this to run its modpack protocol through the one port a modded server is
 guaranteed to have open. It layers its own TLS on top with the transport handoff described below.
 
+When the caller already knows the transport address, build the route with
+`HolepunchRoute.at(handshakeHost, handshakePort, transportAddress)` instead of calling `resolve`.
+The handshake still presents the logical host and port; only the socket changes.
+
 ## How it works
 
 1. The client resolves the address the way Minecraft does (SRV records, IPv6 literals) and opens a

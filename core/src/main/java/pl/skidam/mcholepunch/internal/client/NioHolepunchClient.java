@@ -42,23 +42,19 @@ public final class NioHolepunchClient {
 	}
 
 	public CompletionStage<HolepunchConnection> connect(HolepunchRequest request) {
-		return connect(request, null);
-	}
-
-	public CompletionStage<HolepunchConnection> connect(HolepunchRequest request, HolepunchRoute resolvedRoute) {
 		CompletableFuture<HolepunchConnection> result = new CompletableFuture<>();
 		long debugId = DebugLog.nextConnectionId();
-		DebugLog.log("CLIENT", debugId, "connect requested host=%s port=%d protocol=%d", request.host(), request.port(), request.protocolVersion());
+		DebugLog.log("CLIENT", debugId, "connect requested host=%s port=%d protocol=%d", request.route().handshakeHost(), request.route().handshakePort(), request.protocolVersion());
 		CONNECT_EXECUTOR.execute(() -> {
 			SocketChannel channel = null;
 			try {
-				HolepunchRoute route = resolvedRoute == null ? resolver.resolve(request.host(), request.port()) : resolvedRoute;
-				DebugLog.log("CLIENT", debugId, "resolved address host=%s port=%d socket=%s", route.host(), route.port(), route.socketAddress());
+				HolepunchRoute route = request.route();
+				DebugLog.log("CLIENT", debugId, "resolved address host=%s port=%d socket=%s", route.handshakeHost(), route.handshakePort(), route.transportAddress());
 				channel = SocketChannel.open();
 				channel.configureBlocking(true);
 				channel.socket().setTcpNoDelay(true);
 				channel.socket().setKeepAlive(true);
-				channel.socket().connect(route.socketAddress(), Math.toIntExact(request.options().connectTimeout().toMillis()));
+				channel.socket().connect(route.transportAddress(), Math.toIntExact(request.options().connectTimeout().toMillis()));
 				DebugLog.log("CLIENT", debugId, "TCP connected local=%s remote=%s", channel.getLocalAddress(), channel.getRemoteAddress());
 				NioHolepunchConnection connection = NioHolepunchConnection.negotiate(debugId, channel, request, route);
 				channel = null;

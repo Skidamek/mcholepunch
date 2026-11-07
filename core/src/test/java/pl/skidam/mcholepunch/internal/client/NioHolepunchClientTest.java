@@ -33,12 +33,12 @@ class NioHolepunchClientTest {
 			closedPort = socket.getLocalPort();
 		}
 
-		HolepunchRoute route = new HolepunchRoute("minecraft.example", 25565, new InetSocketAddress(InetAddress.getLoopbackAddress(), closedPort));
-		HolepunchRequest request = new HolepunchRequest(route.host(), route.port(), 763, new HolepunchHandler() {
+		HolepunchRoute route = HolepunchRoute.at("minecraft.example", 25565, new InetSocketAddress(InetAddress.getLoopbackAddress(), closedPort));
+		HolepunchRequest request = new HolepunchRequest(route, 763, new HolepunchHandler() {
 		},
 				HolepunchOptions.builder().build());
 
-		assertThrows(Exception.class, () -> new NioHolepunchClient(resolver).connect(request, route).toCompletableFuture().get(5, TimeUnit.SECONDS));
+		assertThrows(Exception.class, () -> new NioHolepunchClient(resolver).connect(request).toCompletableFuture().get(5, TimeUnit.SECONDS));
 		assertEquals(0, resolutions.get());
 	}
 }

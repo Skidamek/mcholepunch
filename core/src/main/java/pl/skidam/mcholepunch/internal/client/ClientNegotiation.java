@@ -26,7 +26,7 @@ final class ClientNegotiation {
 		HolepunchOptions options = request.options();
 		String username = Usernames.usernameOrDefault(options);
 		UUID marker = HolepunchMarker.random(0);
-		ByteBuffer handshake = LoginCodec.handshake(request.protocolVersion(), address.host() + options.handshakeHostSuffix(), address.port());
+		ByteBuffer handshake = LoginCodec.handshake(request.protocolVersion(), address.handshakeHost() + options.handshakeHostSuffix(), address.handshakePort());
 		DebugLog.log("CLIENT", debugId, "send handshake %s", DebugLog.preview(handshake));
 		NioHolepunchConnection.writeFully(channel, handshake);
 		ByteBuffer loginStart = LoginCodec.loginStart(username, marker);

@@ -10,6 +10,9 @@ public interface HolepunchConnection extends AutoCloseable {
 	 * Bytes submitted while {@link #isRaw()} is {@code false} are carried by the encrypted transport and delivered to the peer through {@link HolepunchHandler#onRead(ByteBuffer)}; bytes
 	 * submitted while it is {@code true} are carried by the raw stream and delivered through {@link HolepunchHandler#onRawRead(ByteBuffer)}. Writes submitted while
 	 * {@link #commitTransportUpgrade()} is in flight fail instead of being carried, so an application must hold its own output across the flip and submit it once the commit has completed.
+	 * <p>
+	 * Completion callbacks must not block: a callback that waits on the commit future or a sibling write can deadlock the close path, which completes futures on one thread. Aggregate with {@code CompletableFuture.allOf}
+	 * outside the callback instead.
 	 */
 	CompletionStage<Void> write(ByteBuffer data);
 

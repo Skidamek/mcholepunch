@@ -19,8 +19,10 @@ import pl.skidam.mcholepunch.HolepunchFailure;
  * Opt-in transport tracing used to diagnose holepunch connections. Tracing is enabled with the
  * {@code mcholepunch.debug} system property and logs at info under the "mcholepunch" log4j
  * logger, so it lands in the host's logs without any logging configuration; Minecraft and every
- * loader provide log4j themselves. Without tracing, only a failure the transport itself produced
- * stays visible, as one warn line; a plain peer close is quiet.
+ * loader provide log4j themselves. Without tracing the library is silent: client failures are
+ * returned to the caller through a failed future or the closed callback, server failures after
+ * the handover through the channel and the commit future, and only {@link #hardError} — an
+ * internal error that never reaches a caller — prints, as one warning.
  */
 public final class DebugLog {
 	private static final Logger LOGGER = LogManager.getLogger("mcholepunch");
@@ -51,17 +53,25 @@ public final class DebugLog {
 		LOGGER.info(prefix(side, connectionId) + " " + format(message, arguments));
 	}
 
+	/**
+	 * Records a failure under tracing. Without tracing, client failures are returned to callers and
+	 * stay silent here; server failures before the handover are silent or hard errors depending on
+	 * their kind, and after the handover the channel and futures carry them.
+	 */
 	public static void failure(String side, long connectionId, String message, Throwable throwable) {
-		boolean cleanClose = throwable instanceof HolepunchFailure failure && failure.kind() == HolepunchFailure.Kind.CLOSED;
-		if (!ENABLED && cleanClose) {
+		if (!ENABLED) {
 			return;
 		}
-		String line = prefix(side, connectionId) + " " + format(message + ": " + throwable);
-		if (ENABLED) {
-			LOGGER.info(line, throwable);
-			return;
-		}
-		LOGGER.warn(line);
+		LOGGER.info(prefix(side, connectionId) + " " + format(message + ": " + throwable), throwable);
+	}
+
+	/**
+	 * Reports a hard internal error the library could not return to a caller: an inbound pipeline
+	 * exception that closes the channel without any future or callback left to carry the cause.
+	 * Prints one warning unconditionally, tracing on or off; keep the call sites rare.
+	 */
+	public static void hardError(String side, long connectionId, String message, Throwable throwable) {
+		LOGGER.warn(prefix(side, connectionId) + " " + format(message + ": " + throwable), throwable);
 	}
 
 	/** Shared line header keeping the elapsed stamp, thread, and connection identity grep-friendly across log sinks. */

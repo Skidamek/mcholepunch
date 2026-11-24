@@ -1,7 +1,6 @@
 package pl.skidam.mcholepunch.server.netty;
 
 import java.io.IOException;
-import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.security.GeneralSecurityException;
 import java.security.KeyPair;
@@ -18,12 +17,12 @@ import io.netty.channel.ChannelFutureListener;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelPipeline;
+import io.netty.handler.codec.DecoderException;
 import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.mcholepunch.HolepunchFailure;
 import pl.skidam.mcholepunch.internal.DebugLog;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
-import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
 import pl.skidam.mcholepunch.internal.protocol.LoginCodec;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 import pl.skidam.mcholepunch.server.netty.NettyChannelRegistry.Registration;
@@ -51,9 +50,6 @@ public final class NettyLoginNegotiator {
 
 	private final Channel channel;
 	private final KeyPair keyPair;
-	private final String username;
-	private final SocketAddress remoteAddress;
-	private final HolepunchMarker marker;
 	private final Registration registration;
 	private final Duration responseTimeout;
 	private final byte[] challenge;
@@ -61,16 +57,13 @@ public final class NettyLoginNegotiator {
 	private ScheduledFuture<?> responseTimeoutFuture;
 	private NettyHolepunchConnection connection;
 
-	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration) {
-		this(channel, keyPair, username, remoteAddress, marker, registration, DEFAULT_RESPONSE_TIMEOUT);
+	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, Registration registration) {
+		this(channel, keyPair, registration, DEFAULT_RESPONSE_TIMEOUT);
 	}
 
-	NettyLoginNegotiator(Channel channel, KeyPair keyPair, String username, SocketAddress remoteAddress, HolepunchMarker marker, Registration registration, Duration responseTimeout) {
+	NettyLoginNegotiator(Channel channel, KeyPair keyPair, Registration registration, Duration responseTimeout) {
 		this.channel = Objects.requireNonNull(channel, "channel");
 		this.keyPair = Objects.requireNonNull(keyPair, "keyPair");
-		this.username = Objects.requireNonNull(username, "username");
-		this.remoteAddress = Objects.requireNonNull(remoteAddress, "remoteAddress");
-		this.marker = Objects.requireNonNull(marker, "marker");
 		this.registration = Objects.requireNonNull(registration, "registration");
 		this.responseTimeout = requirePositive(responseTimeout, "responseTimeout");
 		this.challenge = MinecraftCrypt.randomBytes(CHALLENGE_BYTES);
@@ -120,7 +113,8 @@ public final class NettyLoginNegotiator {
 		} catch (IOException exception) {
 			fail(HolepunchFailure.Kind.UNEXPECTED_PACKET, "invalid login encryption response", exception);
 		} catch (GeneralSecurityException exception) {
-			fail(HolepunchFailure.Kind.IO, "login encryption failed", exception);
+			// A secret or challenge we cannot decrypt is the client's doing, not a server failure.
+			fail(HolepunchFailure.Kind.UNEXPECTED_PACKET, "client login encryption response failed to decrypt", exception);
 		}
 	}
 
@@ -139,8 +133,7 @@ public final class NettyLoginNegotiator {
 					return;
 				}
 				if (!future.isSuccess()) {
-					state = State.CLOSED;
-					connection.closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "takeover query write failed", future.cause()));
+					fail(HolepunchFailure.Kind.IO, "takeover query write failed", future.cause());
 					return;
 				}
 				switchToTransport();
@@ -161,9 +154,12 @@ public final class NettyLoginNegotiator {
 			pipeline.remove(RESPONSE_HANDLER_NAME);
 			pipeline.remove(VanillaFrameEncoder.HANDLER_NAME);
 			pipeline.addLast(TRANSPORT_DECODER_NAME, new NettyTransportDecoder(connection.encryption(), connection, TransportFrame.MAX_FRAME_BYTES));
-			pipeline.addLast(NettyHolepunchConnection.InboundWatchdog.class.getSimpleName(), new NettyHolepunchConnection.InboundWatchdog(connection));
 			pipeline.addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
 			registration.application().install(channel, connection);
+			// The watchdog sits tail-ward of the application so an exception an application handler
+			// does not handle also reaches it instead of dying at the pipeline tail with the channel
+			// left open.
+			pipeline.addLast(NettyHolepunchConnection.InboundWatchdog.class.getSimpleName(), new NettyHolepunchConnection.InboundWatchdog(connection));
 			state = State.OPEN;
 			DebugLog.log("SERVER", connection.debugId(), "application installed pipeline=%s", channel.pipeline().names());
 		} catch (Throwable throwable) {
@@ -185,8 +181,15 @@ public final class NettyLoginNegotiator {
 		if (connection != null) {
 			connection.closeWith(failure);
 		} else {
-			DebugLog.failure("SERVER", 0, message, failure);
 			channel.close();
+		}
+		// Every path reaching here is pre-install: the application has no channel and no future, so
+		// a server-side IO failure would vanish into a silent close, while client-caused outcomes
+		// (timeouts, malformed responses, dropped sockets) are the client's to observe.
+		if (kind == HolepunchFailure.Kind.IO) {
+			DebugLog.hardError("SERVER", 0, message, failure);
+		} else {
+			DebugLog.failure("SERVER", 0, message, failure);
 		}
 	}
 
@@ -239,6 +242,11 @@ public final class NettyLoginNegotiator {
 
 		@Override
 		public void exceptionCaught(ChannelHandlerContext context, Throwable cause) {
+			if (cause instanceof DecoderException || cause instanceof IOException) {
+				// A malformed login frame or a dropped socket is the client's doing, not a server failure.
+				fail(HolepunchFailure.Kind.UNEXPECTED_PACKET, "login negotiation pipeline failed", cause);
+				return;
+			}
 			fail(HolepunchFailure.Kind.IO, "login negotiation pipeline failed", cause);
 		}
 	}

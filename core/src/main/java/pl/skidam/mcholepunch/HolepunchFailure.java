@@ -4,7 +4,7 @@ import java.io.IOException;
 
 public final class HolepunchFailure extends IOException {
 	public enum Kind {
-		UNSUPPORTED, AUTHENTICATION_REQUESTED, UNEXPECTED_PACKET, TIMEOUT, CLOSED, PROXY_REJECTED, IO
+		AUTHENTICATION_REQUESTED, UNEXPECTED_PACKET, TIMEOUT, CLOSED, IO
 	}
 
 	private final Kind kind;

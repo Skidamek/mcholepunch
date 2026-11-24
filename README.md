@@ -141,7 +141,12 @@ identity.
 
 Both modules target Java 17. Transport tracing, on the client and the server alike, is behind
 `-Dmcholepunch.debug=true` (frame previews sized by `-Dmcholepunch.debug.previewBytes`, 16 by
-default).
+default). Without that flag the library logs nothing on paths that return failures to their
+caller: client outcomes come back through failed futures and the closed callback, server outcomes
+after the handover through the channel and the commit future. Two things still print as a warning
+because no caller exists to receive them: a server-side IO failure before the application is
+installed, and an inbound pipeline exception an application handler did not handle. A malformed
+peer frame is the peer's doing and records under tracing only.
 
 ## License
 

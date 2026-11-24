@@ -1,5 +1,6 @@
 package pl.skidam.mcholepunch.server.netty;
 
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.Locale;
 import java.util.Objects;
@@ -20,6 +21,7 @@ import io.netty.channel.ChannelInboundHandlerAdapter;
 import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.WriteBufferWaterMark;
+import io.netty.handler.codec.DecoderException;
 import io.netty.util.ReferenceCountUtil;
 import io.netty.util.concurrent.PromiseCombiner;
 
@@ -312,7 +314,13 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 				channel.bytesBeforeUnwritable(), channel.pipeline().names());
 	}
 
-	/** Closes the channel on an inbound pipeline failure the application did not handle; the close future reports it to the connection. */
+	/**
+	 * Closes the channel on an inbound pipeline failure the application did not handle, and is
+	 * installed tail-ward of the application handlers so it also catches exceptions they let
+	 * through. A malformed frame or a dropped socket is the peer's doing and the app only sees the
+	 * closed channel, so it records under tracing; anything else is an internal error that reaches
+	 * no caller and prints as a hard error rather than disappearing into a silent close.
+	 */
 	static final class InboundWatchdog extends ChannelInboundHandlerAdapter {
 		private final NettyHolepunchConnection connection;
 
@@ -322,8 +330,29 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 
 		@Override
 		public void exceptionCaught(ChannelHandlerContext context, Throwable cause) {
-			DebugLog.failure("SERVER", connection.debugId, "pipeline exception", cause);
+			if (isPeerFrameFailure(cause)) {
+				DebugLog.failure("SERVER", connection.debugId, "pipeline exception", cause);
+			} else {
+				DebugLog.hardError("SERVER", connection.debugId, "pipeline exception", cause);
+			}
 			context.close();
+		}
+
+		/**
+		 * Whether the pipeline failure is the peer's doing: a malformed frame surfaces as the frame
+		 * reader's IOException at the root of a DecoderException. Any other cause inside a
+		 * DecoderException, and any raw exception reaching the tail, is a library or application
+		 * fault that reaches no caller and must print.
+		 */
+		private static boolean isPeerFrameFailure(Throwable cause) {
+			if (!(cause instanceof DecoderException)) {
+				return false;
+			}
+			Throwable root = cause;
+			while (root.getCause() != null) {
+				root = root.getCause();
+			}
+			return root instanceof IOException;
 		}
 	}
 }

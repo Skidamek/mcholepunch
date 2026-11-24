@@ -45,7 +45,9 @@ public final class TransportFeed {
 			int plaintextBytes = encryption.decrypt(encrypted, plaintext);
 			encryptedInput.position(encryptedInput.position() + encryptedBytes);
 			if (plaintextBytes != encryptedBytes) {
-				throw new IOException("transport cipher changed length from " + encryptedBytes + " to " + plaintextBytes);
+				// A cipher whose state no longer matches the stream is a library bug, not a peer
+				// condition: fail as an internal invariant so it never classifies as peer input.
+				throw new IllegalStateException("transport cipher changed length from " + encryptedBytes + " to " + plaintextBytes);
 			}
 			plaintext.flip();
 			for (TransportFrame frame : reader.feed(plaintext)) {

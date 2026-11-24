@@ -89,7 +89,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 		releaseHeld();
 		ctx.pipeline().remove(this);
 		DebugLog.log("login takeover", 0, "marker accepted name=%s remote=%s", loginStart.username(), ctx.channel().remoteAddress());
-		new NettyLoginNegotiator(ctx.channel(), keyPair, loginStart.username(), ctx.channel().remoteAddress(), marker.get(), registration).start();
+		new NettyLoginNegotiator(ctx.channel(), keyPair, registration).start();
 	}
 
 	@Override

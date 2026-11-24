@@ -1,6 +1,7 @@
 package pl.skidam.mcholepunch.internal.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -26,6 +27,8 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.junit.jupiter.api.Test;
 
@@ -211,6 +214,105 @@ class NioHolepunchConnectionEndToEndTest {
 			assertTrue(server.awaitClientData("ping"), "the connection must keep working after a coalesced first read");
 			assertNull(server.failure());
 			connection.close();
+		}
+	}
+
+	/**
+	 * Writes racing the commit must never corrupt the stream: a write is either ordered before the
+	 * COMMIT task on the writer (encrypted era) or rejected up front, so a corrupted framing would
+	 * surface as an unknown frame type on the server's read loop.
+	 */
+	@Test
+	void writesRacingCommitsKeepTheStreamIntact() throws Exception {
+		try (TestServer server = new TestServer()) {
+			server.start();
+			HolepunchRoute route = server.route();
+			HolepunchRequest request = new HolepunchRequest(route, 763, new HolepunchHandler() {
+			}, HolepunchOptions.builder().build());
+			HolepunchConnection connection = new NioHolepunchClient().connect(request).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+			// Every write that succeeded is recorded, in order; the era bug this test guards sends a
+			// transport-framed chunk through the raw path, and the raw reader accepts any bytes, so
+			// the only visible marker is the frame prefix inside the raw stream. One write completes
+			// before the commit request, so the encrypted era is always exercised.
+			List<String> written = Collections.synchronizedList(new ArrayList<>());
+			AtomicReference<Exception> hung = new AtomicReference<>();
+			String before = "before";
+			connection.write(ByteBuffer.wrap(before.getBytes(StandardCharsets.UTF_8))).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			written.add(before);
+			CountDownLatch writesDone = new CountDownLatch(1);
+			Thread writer = new Thread(() -> {
+				for (int index = 0; index < 200; index++) {
+					String payload = "w" + index;
+					try {
+						connection.write(ByteBuffer.wrap(payload.getBytes(StandardCharsets.UTF_8))).toCompletableFuture().get(5, TimeUnit.SECONDS);
+						written.add(payload);
+					} catch (InterruptedException interrupted) {
+						Thread.currentThread().interrupt();
+						hung.compareAndSet(null, interrupted);
+						writesDone.countDown();
+						return;
+					} catch (TimeoutException timedOut) {
+						hung.compareAndSet(null, timedOut);
+						writesDone.countDown();
+						return;
+					} catch (ExecutionException rejected) {
+						// Writes that land in the commit window fail by contract; the loop continues.
+						// A hung write surfaces as TimeoutException and fails the test.
+					}
+				}
+				writesDone.countDown();
+			}, "mcholepunch-racing-writer");
+			writer.start();
+			server.commit();
+			CompletionStage<Void> commit = connection.commitTransportUpgrade();
+			commit.toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			assertTrue(writesDone.await(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+			writer.join(1000);
+			assertNull(hung.get(), "a racing write hung: " + hung.get());
+			assertNull(server.failure(), "the stream must not corrupt while writes race the commit");
+
+			// A write future completes when the bytes reach the socket, not when the server's read
+			// loop has processed them, so poll for the full length before asserting.
+			String expected = String.join("", written);
+			String delivered = server.awaitClientAndRawDataJoined(expected.length());
+			// The pre-commit write pins the encrypted era: a regression that sends it raw, unframed,
+			// would still satisfy the combined assertion above.
+			assertTrue(server.clientDataJoined().startsWith(before), "the pre-commit write must arrive through the encrypted era");
+			assertFalse(server.rawClientDataJoined().contains(before), "the pre-commit write must not leak into the raw era");
+			assertFalse(server.rawClientDataJoined().indexOf('\u0000') != -1, "the raw era must not carry a transport frame prefix (0x00 is absent from every payload)");
+			assertEquals(expected, delivered, "every successful write must reach exactly one era, whole and in order");
+
+			connection.write(ByteBuffer.wrap("after".getBytes(StandardCharsets.UTF_8))).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			assertTrue(server.awaitRawClientData("after"), "the raw era must still carry post-commit writes");
+			connection.close();
+		}
+	}
+
+	/** A write that races a close must always complete: close() used to discard enqueued tasks with their futures unowned. */
+	@Test
+	void writesRacingClosesAlwaysComplete() throws Exception {
+		for (int attempt = 0; attempt < 25; attempt++) {
+			try (TestServer server = new TestServer()) {
+				server.start();
+				HolepunchRoute route = server.route();
+				HolepunchRequest request = new HolepunchRequest(route, 763, new HolepunchHandler() {
+				}, HolepunchOptions.builder().build());
+				HolepunchConnection connection = new NioHolepunchClient().connect(request).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+				List<CompletionStage<Void>> writes = new ArrayList<>();
+				for (int index = 0; index < 20; index++) {
+					writes.add(connection.write(ByteBuffer.wrap(("w" + index).getBytes(StandardCharsets.UTF_8))));
+				}
+				connection.close();
+				for (CompletionStage<Void> write : writes) {
+					try {
+						write.toCompletableFuture().get(5, TimeUnit.SECONDS);
+					} catch (ExecutionException expected) {
+						// Bytes past the close fail; what must never happen is a hang.
+					}
+				}
+			}
 		}
 	}
 
@@ -433,6 +535,32 @@ class NioHolepunchConnectionEndToEndTest {
 			} catch (InterruptedException exception) {
 				Thread.currentThread().interrupt();
 			}
+		}
+
+		String clientDataJoined() {
+			synchronized (clientData) {
+				return String.join("", clientData);
+			}
+		}
+
+		String rawClientDataJoined() {
+			synchronized (rawClientData) {
+				return String.join("", rawClientData);
+			}
+		}
+
+		/** Waits until both eras together carry the expected number of bytes; a write future completes before the server reads them. */
+		String awaitClientAndRawDataJoined(int expectedLength) throws InterruptedException {
+			long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(TEST_TIMEOUT_SECONDS);
+			String joined = "";
+			while (System.nanoTime() < deadline) {
+				joined = clientDataJoined() + rawClientDataJoined();
+				if (joined.length() >= expectedLength) {
+					return joined;
+				}
+				Thread.sleep(10);
+			}
+			return joined;
 		}
 
 		boolean awaitClientData(String expected) throws InterruptedException {

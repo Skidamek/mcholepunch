@@ -7,7 +7,6 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.ByteArrayOutputStream;
-import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
@@ -27,7 +26,6 @@ import io.netty.util.ReferenceCountUtil;
 
 import pl.skidam.mcholepunch.internal.crypto.CipherStreamState;
 import pl.skidam.mcholepunch.internal.crypto.MinecraftCrypt;
-import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
 import pl.skidam.mcholepunch.internal.protocol.LoginCodec;
 import pl.skidam.mcholepunch.internal.protocol.MinecraftFrameReader;
 import pl.skidam.mcholepunch.internal.protocol.TakeoverQuery;
@@ -44,7 +42,7 @@ class NettyLoginNegotiatorTest {
 			channel0.pipeline().addLast("application", new ChannelInboundHandlerAdapter());
 			installed.set(true);
 		})) {
-			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair, "test", new InetSocketAddress("127.0.0.1", 25565), new HolepunchMarker(1, 0, 1), registration);
+			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair, registration);
 
 			negotiator.start();
 			assertVanillaHandlersGone(channel);
@@ -84,7 +82,11 @@ class NettyLoginNegotiatorTest {
 			assertTrue(installed.get());
 
 			List<String> names = channel.pipeline().names();
-			assertEquals("application", names.get(names.size() - 2), "the application handlers are the only handlers tail-ward of the transport");
+			int framer = names.indexOf(NettyHolepunchConnection.HANDLER_NAME);
+			int application = names.indexOf("application");
+			int watchdog = names.indexOf(NettyHolepunchConnection.InboundWatchdog.class.getSimpleName());
+			assertTrue(framer < application && application < watchdog, "the application handlers sit tail-ward of the transport");
+			assertEquals(names.size() - 2, watchdog, "the watchdog must be the last real handler so it also catches unhandled application exceptions");
 			assertTrue(names.indexOf(NettyLoginNegotiator.CIPHER_ENCODER_NAME) < names.indexOf(NettyHolepunchConnection.HANDLER_NAME),
 					"the framer must sit tail-ward of the cipher encoder so frames are written before encryption");
 			assertNull(channel.pipeline().get(VanillaFrameDecoder.HANDLER_NAME));
@@ -98,7 +100,7 @@ class NettyLoginNegotiatorTest {
 		EmbeddedChannel channel = vanillaPipeline();
 		AtomicBoolean installed = new AtomicBoolean();
 		try (NettyChannelRegistry.Registration registration = NettyChannelRegistry.register(1024, (channel0, connection) -> installed.set(true))) {
-			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair(), "test", new InetSocketAddress("127.0.0.1", 25565), new HolepunchMarker(1, 0, 1), registration);
+			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair(), registration);
 
 			negotiator.start();
 			ByteBuf request = channel.readOutbound();
@@ -118,7 +120,7 @@ class NettyLoginNegotiatorTest {
 		KeyPair keyPair = keyPair();
 		AtomicBoolean installed = new AtomicBoolean();
 		try (NettyChannelRegistry.Registration registration = NettyChannelRegistry.register(1024, (channel0, connection) -> installed.set(true))) {
-			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair, "test", new InetSocketAddress("127.0.0.1", 25565), new HolepunchMarker(1, 0, 1), registration);
+			NettyLoginNegotiator negotiator = new NettyLoginNegotiator(channel, keyPair, registration);
 
 			negotiator.start();
 			ByteBuf framedRequest = channel.readOutbound();

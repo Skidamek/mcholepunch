@@ -23,6 +23,21 @@ There is no Minecraft code, no mixins, and no version tracking in this repositor
 
 Everything under `pl.skidam.mcholepunch.internal` and the remaining plumbing classes in `server.netty` are internal implementation details.
 
+## Gradle
+
+```kotlin
+repositories {
+	maven("https://skidamek.github.io/maven/")
+}
+
+dependencies {
+	implementation("pl.skidam:mcholepunch-core:0.1.0")
+	implementation("pl.skidam:mcholepunch-server-netty:0.1.0")
+}
+```
+
+If your host environment already provides Netty and Log4j (such as Minecraft mod loaders), disable transitive resolution on those entries so they are not bundled twice.
+
 ## Quick Start
 
 ### Server (Netty)

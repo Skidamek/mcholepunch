@@ -103,8 +103,21 @@ class NettyLoginClaimHandlerTest {
 			MinecraftFrameReader reader = new MinecraftFrameReader(64 * 1024);
 			List<ByteBuffer> frames = reader.feed(request.nioBuffer());
 			assertEquals(1, frames.size(), "the encryption request must be one vanilla-shaped frame");
-			assertFalse(LoginCodec.readEncryptionRequest(frames.get(0)).shouldAuthenticate(), "the negotiator must not request Mojang authentication");
+			assertTrue(LoginCodec.readEncryptionRequest(frames.get(0)).shouldAuthenticate(), "the negotiator must mirror online-mode authentication by default");
 			request.release();
+
+			// Explicit shouldAuthenticate=false is preserved on the wire for offline-mode servers.
+			EmbeddedChannel offlineChannel = new EmbeddedChannel();
+			offlineChannel.pipeline().addFirst("splitter", new ChannelInboundHandlerAdapter());
+			NettyLoginClaimHandler.install(offlineChannel.pipeline(), keyPair(), MARKER_CONSTANT, false);
+			offlineChannel.writeInbound(Unpooled.wrappedBuffer(inbound(LoginCodec.handshake(763, "server.test", 25565))));
+			offlineChannel.writeInbound(Unpooled.wrappedBuffer(inbound(LoginCodec.loginStart("Steve", HolepunchMarker.create(MARKER_CONSTANT, 0, 777)))));
+			ByteBuf offlineRequest = offlineChannel.readOutbound();
+			assertNotNull(offlineRequest);
+			List<ByteBuffer> offlineFrames = new MinecraftFrameReader(64 * 1024).feed(offlineRequest.nioBuffer());
+			assertFalse(LoginCodec.readEncryptionRequest(offlineFrames.get(0)).shouldAuthenticate());
+			offlineRequest.release();
+			offlineChannel.finishAndReleaseAll();
 
 			// The same login under the built-in constant must not be claimed by this deployment.
 			EmbeddedChannel foreign = claimChannel(MARKER_CONSTANT);

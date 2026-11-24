@@ -56,9 +56,6 @@ final class ClientNegotiation {
 				}
 				DebugLog.log("CLIENT", debugId, "received encryption request publicKey=%d verifyToken=%d shouldAuthenticate=%s", encryption.publicKey().length, encryption.verifyToken().length,
 						encryption.shouldAuthenticate());
-				if (encryption.shouldAuthenticate()) {
-					throw new HolepunchFailure(HolepunchFailure.Kind.AUTHENTICATION_REQUESTED, "server requested Mojang authentication", null);
-				}
 				PublicKey key = MinecraftCrypt.decodePublicKey(encryption.publicKey());
 				byte[] secret = MinecraftCrypt.newSecret();
 				byte[] encryptedSecret = MinecraftCrypt.rsaEncrypt(key, secret);

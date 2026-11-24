@@ -29,6 +29,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 
 	private final KeyPair keyPair;
 	private final byte[] markerConstant;
+	private final boolean shouldAuthenticate;
 	private ByteBuf handshake;
 	private ScheduledFuture<?> heldHandshakeExpiry;
 
@@ -46,13 +47,27 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 		pipeline.addAfter(VANILLA_INBOUND_ANCHOR, HANDLER_NAME, new NettyLoginClaimHandler(keyPair, markerConstant));
 	}
 
+	/**
+	 * Installs the claim handler with a custom 80-bit marker constant and the server's
+	 * {@code shouldAuthenticate} flag for the Encryption Request packet, so claimed logins match
+	 * the server's online-mode wire shape.
+	 */
+	public static void install(ChannelPipeline pipeline, KeyPair keyPair, byte[] markerConstant, boolean shouldAuthenticate) {
+		pipeline.addAfter(VANILLA_INBOUND_ANCHOR, HANDLER_NAME, new NettyLoginClaimHandler(keyPair, markerConstant, shouldAuthenticate));
+	}
+
 	public NettyLoginClaimHandler(KeyPair keyPair) {
-		this(keyPair, HolepunchMarker.defaultMarkerConstant());
+		this(keyPair, HolepunchMarker.defaultMarkerConstant(), true);
 	}
 
 	public NettyLoginClaimHandler(KeyPair keyPair, byte[] markerConstant) {
+		this(keyPair, markerConstant, true);
+	}
+
+	public NettyLoginClaimHandler(KeyPair keyPair, byte[] markerConstant, boolean shouldAuthenticate) {
 		this.keyPair = Objects.requireNonNull(keyPair, "keyPair");
 		this.markerConstant = HolepunchMarker.requireMarkerConstant(markerConstant);
+		this.shouldAuthenticate = shouldAuthenticate;
 	}
 
 	@Override
@@ -90,7 +105,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 		releaseHeld();
 		ctx.pipeline().remove(this);
 		DebugLog.log("login takeover", 0, "marker accepted name=%s remote=%s", loginStart.username(), ctx.channel().remoteAddress());
-		new NettyLoginNegotiator(ctx.channel(), keyPair, registration).start();
+		new NettyLoginNegotiator(ctx.channel(), keyPair, registration, shouldAuthenticate).start();
 	}
 
 	@Override

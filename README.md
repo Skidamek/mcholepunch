@@ -84,7 +84,7 @@ HolepunchConnection connection = HolepunchClient.connect(route, 763, handler, op
 1. **Connect**: The client resolves the target (applying RFC 2782 SRV priority and weight selection on port `25565`) and opens a TCP socket.
 2. **Handshake + Login Start**: The client sends a vanilla Handshake (`packet 0`, login intention `2`) with the caller-supplied protocol version, followed by a Login Start (`packet 0`) containing a username and a generated marker UUID.
 3. **Claim or Replay**: `NettyLoginClaimHandler` holds the Handshake frame (bounded by a 10s expiry timer) until Login Start arrives. If the UUID does not match or no application is registered, both frames are replayed downstream and the handler removes itself. If it matches, `NettyLoginNegotiator` strips the vanilla pipeline and takes over the channel.
-4. **Encryption Exchange**: The server sends an Encryption Request (`packet 1`, `shouldAuthenticate = false`) with its RSA public key and a 4-byte challenge. The client generates a 16-byte AES secret, encrypts both secret and challenge with the server's RSA public key, replies with Encryption Response (`packet 1`), and both sides enable `AES/CFB8/NoPadding`.
+4. **Encryption Exchange**: The server sends an Encryption Request (`packet 1`, `shouldAuthenticate` matching the server's online-mode setting, `true` by default) with its RSA public key and a 4-byte challenge. The client generates a 16-byte AES secret, encrypts both secret and challenge with the server's RSA public key, replies with Encryption Response (`packet 1`), and both sides enable `AES/CFB8/NoPadding`.
 5. **Takeover**: The server sends an encrypted Custom Query (`packet 4`, `mcholepunch:takeover`), swaps to the framed transport pipeline, and invokes `HolepunchChannelApplication.install(...)`. The client switches upon receiving the query and invokes `HolepunchHandler.onOpen(...)`.
 
 ## Marker UUIDs and Custom Routing
@@ -133,8 +133,7 @@ On the client, `connection.write(ByteBuffer)` completes only once the bytes have
 
 Client failures surface as `HolepunchFailure` (a subclass of `IOException`) with a typed `HolepunchFailure.Kind`:
 
-- `AUTHENTICATION_REQUESTED`: Peer sent an Encryption Request with `shouldAuthenticate = true` (e.g., an online-mode vanilla server without `mcholepunch`).
-- `UNEXPECTED_PACKET`: Peer sent an unrecognized packet during negotiation or takeover (e.g., an offline-mode vanilla server).
+- `UNEXPECTED_PACKET`: Peer sent an unrecognized packet during negotiation or takeover (e.g., a vanilla server without `mcholepunch`).
 - `TIMEOUT`: Negotiation or takeover exceeded `negotiationTimeout`.
 - `CLOSED`: Connection closed locally or by the peer.
 - `IO`: Socket, cipher, or callback error.

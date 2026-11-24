@@ -50,6 +50,7 @@ public final class NettyLoginNegotiator {
 	private final Channel channel;
 	private final KeyPair keyPair;
 	private final Registration registration;
+	private final boolean shouldAuthenticate;
 	private final Duration responseTimeout;
 	private final byte[] challenge;
 	private State state = State.NEW;
@@ -57,13 +58,22 @@ public final class NettyLoginNegotiator {
 	private NettyHolepunchConnection connection;
 
 	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, Registration registration) {
-		this(channel, keyPair, registration, DEFAULT_RESPONSE_TIMEOUT);
+		this(channel, keyPair, registration, true, DEFAULT_RESPONSE_TIMEOUT);
+	}
+
+	public NettyLoginNegotiator(Channel channel, KeyPair keyPair, Registration registration, boolean shouldAuthenticate) {
+		this(channel, keyPair, registration, shouldAuthenticate, DEFAULT_RESPONSE_TIMEOUT);
 	}
 
 	NettyLoginNegotiator(Channel channel, KeyPair keyPair, Registration registration, Duration responseTimeout) {
+		this(channel, keyPair, registration, true, responseTimeout);
+	}
+
+	NettyLoginNegotiator(Channel channel, KeyPair keyPair, Registration registration, boolean shouldAuthenticate, Duration responseTimeout) {
 		this.channel = Objects.requireNonNull(channel, "channel");
 		this.keyPair = Objects.requireNonNull(keyPair, "keyPair");
 		this.registration = Objects.requireNonNull(registration, "registration");
+		this.shouldAuthenticate = shouldAuthenticate;
 		this.responseTimeout = requirePositive(responseTimeout, "responseTimeout");
 		this.challenge = MinecraftCrypt.randomBytes(CHALLENGE_BYTES);
 	}
@@ -87,7 +97,7 @@ public final class NettyLoginNegotiator {
 			channel.config().setAutoRead(true);
 			state = State.REQUEST_SENT;
 			responseTimeoutFuture = channel.eventLoop().schedule(() -> fail(HolepunchFailure.Kind.TIMEOUT, "login encryption response timed out", null), responseTimeout.toNanos(), TimeUnit.NANOSECONDS);
-			ByteBuffer request = LoginCodec.encryptionRequestPacket(keyPair.getPublic().getEncoded(), challenge, false);
+			ByteBuffer request = LoginCodec.encryptionRequestPacket(keyPair.getPublic().getEncoded(), challenge, shouldAuthenticate);
 			channel.writeAndFlush(Unpooled.wrappedBuffer(request)).addListener(future -> {
 				if (!future.isSuccess()) {
 					fail(HolepunchFailure.Kind.IO, "unable to send login encryption request", future.cause());

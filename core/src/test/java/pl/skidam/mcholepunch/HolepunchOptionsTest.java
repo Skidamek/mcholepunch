@@ -1,10 +1,13 @@
 package pl.skidam.mcholepunch;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
+
+import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 
 class HolepunchOptionsTest {
 	@Test
@@ -18,5 +21,13 @@ class HolepunchOptionsTest {
 				"the option must copy, not alias, the caller's array");
 		assertThrows(IllegalArgumentException.class, () -> HolepunchOptions.builder().markerConstant(null));
 		assertThrows(IllegalArgumentException.class, () -> HolepunchOptions.builder().markerConstant(new byte[9]));
+	}
+
+	@Test
+	void frameCapDefaultsToTheSafeSendSizeAndStaysUnderTheProtocolCeiling() {
+		assertEquals(TransportFrame.DEFAULT_MAX_FRAME_BYTES, HolepunchOptions.builder().build().maximumFrameBytes());
+		assertEquals(64 * 1024, HolepunchOptions.builder().maximumFrameBytes(64 * 1024).build().maximumFrameBytes());
+		assertThrows(IllegalArgumentException.class, () -> HolepunchOptions.builder().maximumFrameBytes(0));
+		assertThrows(IllegalArgumentException.class, () -> HolepunchOptions.builder().maximumFrameBytes(TransportFrame.MAX_FRAME_BYTES + 1));
 	}
 }

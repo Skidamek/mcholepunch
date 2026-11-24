@@ -71,7 +71,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private final ScheduledFuture<?> watchdog;
 	private final ByteArrayOutputStream initialData = new ByteArrayOutputStream();
 	private byte[] initialDataSnapshot = new byte[0];
-	private ByteBuffer encryptedOutput = ByteBuffer.allocate(8192);
+	private ByteBuffer encryptedOutput = ByteBuffer.allocateDirect(8192);
 	private final TransportHandoff handoff = new TransportHandoff();
 	private final AtomicReference<CompletableFuture<Void>> commitResult = new AtomicReference<>();
 	/**
@@ -210,19 +210,25 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				return;
 			}
 			if (handoff.isRaw()) {
-				sendFrame(data);
+				// The raw era is the bulk path: write the caller's bytes straight to the socket
+				// instead of copying every payload through the cipher output buffer.
+				writeFully(channel, data);
 			} else {
-				// The peer rejects frames above the cap, so one write is split into the frames it will
-				// accept instead of succeeding here and being dropped there.
+				// The peer rejects frames above the protocol ceiling, so one write is split at the
+				// caller's send cap into frames both ends accept instead of succeeding here and being
+				// dropped there. The receiver always accepts up to the ceiling.
+				int maximumFrameBytes = request.options().maximumFrameBytes();
 				while (data.hasRemaining()) {
-					int chunkBytes = Math.min(data.remaining(), TransportFrame.MAX_FRAME_BYTES);
+					int chunkBytes = Math.min(data.remaining(), maximumFrameBytes);
 					ByteBuffer chunk = data.slice();
 					chunk.limit(chunkBytes);
 					sendFrame(TransportFrameCodec.data(chunk));
 					data.position(data.position() + chunkBytes);
 				}
 			}
-			DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d", size, sentBytes.addAndGet(size));
+			if (DebugLog.enabled()) {
+				DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d", size, sentBytes.addAndGet(size));
+			}
 			result.complete(null);
 		} catch (Throwable throwable) {
 			HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", throwable);
@@ -239,7 +245,9 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		encryptedOutput.clear();
 		int encryptedBytes = encryption.encrypt(frame, encryptedOutput);
 		encryptedOutput.flip();
-		DebugLog.log("CLIENT", debugId, "sending kind=DATA plaintext=%d wire=%d rawEra=%s", frame.limit(), encryptedBytes, handoff.isRaw());
+		if (DebugLog.enabled()) {
+			DebugLog.log("CLIENT", debugId, "sending frame plaintext=%d wire=%d", frame.limit(), encryptedBytes);
+		}
 		writeFully(channel, encryptedOutput);
 	}
 
@@ -379,7 +387,9 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	}
 
 	private void readLoop() {
-		ByteBuffer network = ByteBuffer.allocate(TRANSFER_BUFFER_SIZE);
+		// Direct so the socket does not copy every read through a temporary heap buffer; the raw
+		// era delivers slices of this buffer straight to the handler.
+		ByteBuffer network = ByteBuffer.allocateDirect(TRANSFER_BUFFER_SIZE);
 		try {
 			while (!closed.get()) {
 				awaitReadsEnabled();
@@ -432,13 +442,18 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	}
 
 	private CompletionStage<Void> handleData(byte[] bytes) {
-		long total = receivedBytes.addAndGet(bytes.length);
+		if (DebugLog.enabled()) {
+			long total = receivedBytes.addAndGet(bytes.length);
+			if (!takeoverComplete) {
+				DebugLog.log("CLIENT", debugId, "buffering initial application bytes=%d totalReceived=%d", bytes.length, total);
+			} else {
+				DebugLog.log("CLIENT", debugId, "received application bytes=%d totalReceived=%d %s", bytes.length, total, DebugLog.preview(bytes));
+			}
+		}
 		if (!takeoverComplete) {
 			initialData.writeBytes(bytes);
-			DebugLog.log("CLIENT", debugId, "buffering initial application bytes=%d totalReceived=%d", bytes.length, total);
 			return null;
 		}
-		DebugLog.log("CLIENT", debugId, "received application bytes=%d totalReceived=%d %s", bytes.length, total, DebugLog.preview(bytes));
 		return dispatchRead(ByteBuffer.wrap(bytes));
 	}
 
@@ -450,23 +465,25 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (!data.hasRemaining()) {
 			return CompletableFuture.completedFuture(null);
 		}
-		ByteBuffer copy = ByteBuffer.allocate(data.remaining());
-		copy.put(data).flip();
+		// The view is callback-scoped: the reader thread waits for the returned stage before it
+		// touches the underlying buffer again, so the handler's consume-or-copy contract makes a
+		// defensive copy pure overhead on every delivered chunk.
+		ByteBuffer view = data.asReadOnlyBuffer();
 		CompletableFuture<Void> completion = new CompletableFuture<>();
 		try {
 			callbackExecutor.execute(() -> {
 				if (!openSucceeded.get()) {
-					DebugLog.log("CLIENT", debugId, "dropping read because onOpen has not completed %s", DebugLog.preview(copy));
+					DebugLog.log("CLIENT", debugId, "dropping read because onOpen has not completed %s", DebugLog.preview(view));
 					completion.complete(null);
 					return;
 				}
 				try {
 					if (rawEra) {
-						DebugLog.log("CLIENT", debugId, "dispatch onRawRead %s", DebugLog.preview(copy));
-						handler.onRawRead(copy.asReadOnlyBuffer());
+						DebugLog.log("CLIENT", debugId, "dispatch onRawRead %s", DebugLog.preview(view));
+						handler.onRawRead(view);
 					} else {
-						DebugLog.log("CLIENT", debugId, "dispatch onRead %s", DebugLog.preview(copy));
-						handler.onRead(copy.asReadOnlyBuffer());
+						DebugLog.log("CLIENT", debugId, "dispatch onRead %s", DebugLog.preview(view));
+						handler.onRead(view);
 					}
 					completion.complete(null);
 				} catch (Throwable throwable) {
@@ -588,7 +605,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private void ensureEncryptedCapacity(int requiredBytes) {
 		if (encryptedOutput.capacity() < requiredBytes) {
-			encryptedOutput = ByteBuffer.allocate(requiredBytes);
+			encryptedOutput = ByteBuffer.allocateDirect(requiredBytes);
 		}
 	}
 

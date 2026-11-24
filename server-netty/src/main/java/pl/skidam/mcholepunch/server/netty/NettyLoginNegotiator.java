@@ -121,7 +121,7 @@ public final class NettyLoginNegotiator {
 	private void beginTakeover(byte[] secret) {
 		try {
 			NettyEncryption encryption = new NettyEncryption(secret);
-			connection = new NettyHolepunchConnection(channel, encryption, registration.maximumPendingWriteBytes());
+			connection = new NettyHolepunchConnection(channel, encryption, registration.maximumPendingWriteBytes(), registration.maximumFrameBytes());
 			channel.closeFuture().addListener(ignored -> connection.closeWith(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "Minecraft channel closed", null)));
 			// Vanilla encrypts the whole framed packet after the key exchange; so do we: the
 			// frame encoder prefixes the payload and the cipher encoder encrypts the frame.

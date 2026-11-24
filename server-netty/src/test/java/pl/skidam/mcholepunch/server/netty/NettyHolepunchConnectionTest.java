@@ -97,16 +97,17 @@ class NettyHolepunchConnectionTest {
 	void splitsWritesAboveTheTransportFrameCap() throws Exception {
 		EmbeddedChannel channel = new EmbeddedChannel();
 		NettyEncryption encryption = new NettyEncryption(MinecraftCrypt.newSecret());
-		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, encryption, TransportFrame.MAX_FRAME_BYTES);
+		int frameCap = 1024;
+		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, encryption, 1024 * 1024, frameCap);
 		channel.pipeline().addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
 
-		int overCap = TransportFrame.MAX_FRAME_BYTES + 1;
+		int overCap = frameCap + 1;
 		channel.writeOutbound(Unpooled.wrappedBuffer(new byte[overCap]));
 
 		ByteBuf first = channel.readOutbound();
 		assertEquals(TransportFrame.Type.DATA.wire(), first.readByte(), "the first chunk must carry the data frame type");
-		assertEquals(TransportFrame.MAX_FRAME_BYTES, VarInts.read(first.nioBuffer(first.readerIndex(), first.readableBytes())));
-		assertEquals(TransportFrame.MAX_FRAME_BYTES, first.readableBytes() - VarInts.encodedLength(TransportFrame.MAX_FRAME_BYTES), "the first chunk's payload fills the cap");
+		assertEquals(frameCap, VarInts.read(first.nioBuffer(first.readerIndex(), first.readableBytes())));
+		assertEquals(frameCap, first.readableBytes() - VarInts.encodedLength(frameCap), "the first chunk's payload fills the cap");
 		first.release();
 		ByteBuf second = channel.readOutbound();
 		assertEquals(TransportFrame.Type.DATA.wire(), second.readByte(), "the last chunk must carry the data frame type");

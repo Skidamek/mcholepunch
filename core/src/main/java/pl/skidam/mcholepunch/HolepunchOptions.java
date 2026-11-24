@@ -8,6 +8,7 @@ import java.util.concurrent.ForkJoinPool;
 
 import pl.skidam.mcholepunch.internal.Usernames;
 import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
+import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 
 public final class HolepunchOptions {
 	public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
@@ -26,6 +27,7 @@ public final class HolepunchOptions {
 	private final Duration negotiationTimeout;
 	private final Executor callbackExecutor;
 	private final byte[] markerConstant;
+	private final int maximumFrameBytes;
 
 	private HolepunchOptions(Builder builder) {
 		username = builder.username;
@@ -34,6 +36,7 @@ public final class HolepunchOptions {
 		negotiationTimeout = builder.negotiationTimeout;
 		callbackExecutor = builder.callbackExecutor;
 		markerConstant = builder.markerConstant;
+		maximumFrameBytes = builder.maximumFrameBytes;
 	}
 
 	public static Builder builder() {
@@ -69,6 +72,16 @@ public final class HolepunchOptions {
 		return markerConstant == null ? Optional.empty() : Optional.of(markerConstant.clone());
 	}
 
+	/**
+	 * Send-side transport frame cap. A write above this is split into frames the peer will accept.
+	 * The default is {@link TransportFrame#DEFAULT_MAX_FRAME_BYTES}; the protocol ceiling is
+	 * {@link TransportFrame#MAX_FRAME_BYTES} (the vanilla login frame cap). The peer's reader
+	 * accepts up to the ceiling, so this is a local memory/latency choice, not a wire change.
+	 */
+	public int maximumFrameBytes() {
+		return maximumFrameBytes;
+	}
+
 	public static final class Builder {
 		private String username;
 		private String handshakeHostSuffix = "";
@@ -76,6 +89,7 @@ public final class HolepunchOptions {
 		private Duration negotiationTimeout = DEFAULT_NEGOTIATION_TIMEOUT;
 		private Executor callbackExecutor = ForkJoinPool.commonPool();
 		private byte[] markerConstant;
+		private int maximumFrameBytes = TransportFrame.DEFAULT_MAX_FRAME_BYTES;
 
 		public Builder username(String username) {
 			this.username = Objects.requireNonNull(username, "username");
@@ -109,6 +123,19 @@ public final class HolepunchOptions {
 		 */
 		public Builder markerConstant(byte[] constant) {
 			markerConstant = HolepunchMarker.requireMarkerConstant(constant);
+			return this;
+		}
+
+		/**
+		 * Sets the send-side transport frame cap. Values above zero and at most
+		 * {@link TransportFrame#MAX_FRAME_BYTES} are accepted; writes above the cap are split, so the
+		 * stream is unchanged. Lower values bound the per-frame buffer; the default is 256 KiB.
+		 */
+		public Builder maximumFrameBytes(int maximumFrameBytes) {
+			if (maximumFrameBytes < 1 || maximumFrameBytes > TransportFrame.MAX_FRAME_BYTES) {
+				throw new IllegalArgumentException("maximumFrameBytes must be between 1 and " + TransportFrame.MAX_FRAME_BYTES);
+			}
+			this.maximumFrameBytes = maximumFrameBytes;
 			return this;
 		}
 

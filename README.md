@@ -83,6 +83,12 @@ vanilla AES/CFB8 transport for its whole life: `onRead` and `write` keep working
 out, and the vanilla AES does all of the encryption work. It is a supported resting state, not a
 phase you must pass through.
 
+Bulk payloads belong past the flip: commit **before** large transfers and run them over the raw
+stream (or TLS on top of it). The encrypted transport is bounded by Minecraft's serial AES/CFB8
+cipher at roughly 60 MB/s per core, while the raw stream moves at memory speed; no amount of
+copy-tuning on the encrypted path changes that ceiling, so treat ~60 MB/s per core as its design
+limit and keep it for small protocol messages.
+
 An application that wants to change the wire format midstream (AutoModpack inserts TLS) must not
 race its own bytes into the old format. `commitTransportUpgrade()` exchanges an encrypted COMMIT
 control frame in each direction, and both endpoints flip to the raw stream at the same stream
@@ -117,12 +123,17 @@ These names are the stable surface. The rest of the public classes in `server.ne
 takeover machinery itself, and everything under `internal`, can all change without notice.
 
 Tuning lives in `HolepunchOptions`: username (a random one is generated when absent), the Forge
-and NeoForge `\0FML3\0` host suffix, connect and negotiation timeouts (10 s each), and the
-executor that runs client callbacks (ForkJoinPool common pool by default). The client imposes no
+and NeoForge `\0FML3\0` host suffix, connect and negotiation timeouts (10 s each), the executor
+that runs client callbacks (ForkJoinPool common pool by default), and the send-side frame cap
+(`maximumFrameBytes`, 256 KiB by default). The frame ceiling is the vanilla 2 MiB login cap;
+writes above the send cap are split and the peer accepts up to the ceiling. AutoModpack streams
+4 MiB contract body chunks, but TLS turns them into ~16 KiB records before they reach the
+transport, so the 256 KiB default fits it without configuration. The client imposes no
 pending-write cap: the stage returned by `write` completes only once the bytes reached the socket,
-so apply backpressure by waiting on it before queueing more. The server's pending-write budget is the one value passed to
-`NettyChannelRegistry.register`; Netty applies it as a write-buffer water mark (`isWritable()`),
-not a hard cap.
+so apply backpressure by waiting on it before queueing more. The server's pending-write budget and
+frame cap are the values passed to `NettyChannelRegistry.register` (the two-argument overload
+keeps the 256 KiB frame default); Netty applies the pending budget as a write-buffer water mark
+(`isWritable()`), not a hard cap.
 
 ## What it is not
 

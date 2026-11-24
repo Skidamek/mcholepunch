@@ -47,6 +47,7 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	private final Channel channel;
 	private final NettyEncryption encryption;
 	private final long maximumPendingWriteBytes;
+	private final int maximumFrameBytes;
 	private final boolean automaticRead;
 	private final AtomicBoolean closed = new AtomicBoolean();
 	private final AtomicLong sentBytes = new AtomicLong();
@@ -55,14 +56,23 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	private final ScheduledFuture<?> watchdog;
 	private volatile ChannelHandlerContext framerContext;
 
+	/** Creates a connection with the default send-side frame cap ({@link TransportFrame#DEFAULT_MAX_FRAME_BYTES}). */
 	public NettyHolepunchConnection(Channel channel, NettyEncryption encryption, long maximumPendingWriteBytes) {
+		this(channel, encryption, maximumPendingWriteBytes, TransportFrame.DEFAULT_MAX_FRAME_BYTES);
+	}
+
+	public NettyHolepunchConnection(Channel channel, NettyEncryption encryption, long maximumPendingWriteBytes, int maximumFrameBytes) {
 		this.channel = Objects.requireNonNull(channel, "channel");
 		this.encryption = Objects.requireNonNull(encryption, "encryption");
+		if (maximumFrameBytes < 1 || maximumFrameBytes > TransportFrame.MAX_FRAME_BYTES) {
+			throw new IllegalArgumentException("maximumFrameBytes must be between 1 and " + TransportFrame.MAX_FRAME_BYTES);
+		}
 		this.maximumPendingWriteBytes = maximumPendingWriteBytes;
+		this.maximumFrameBytes = maximumFrameBytes;
 		this.automaticRead = channel.config().isAutoRead();
 		this.watchdog = DebugLog.watchdog("SERVER", debugId, this::debugState);
-		DebugLog.log("SERVER", debugId, "connection created local=%s remote=%s active=%s open=%s writable=%s autoRead=%s maxPending=%d eventLoop=%s", channel.localAddress(), channel.remoteAddress(),
-				channel.isActive(), channel.isOpen(), channel.isWritable(), channel.config().isAutoRead(), maximumPendingWriteBytes, channel.eventLoop().getClass().getName());
+		DebugLog.log("SERVER", debugId, "connection created local=%s remote=%s active=%s open=%s writable=%s autoRead=%s maxPending=%d maxFrame=%d eventLoop=%s", channel.localAddress(), channel.remoteAddress(),
+				channel.isActive(), channel.isOpen(), channel.isWritable(), channel.config().isAutoRead(), maximumPendingWriteBytes, maximumFrameBytes, channel.eventLoop().getClass().getName());
 	}
 
 	public long debugId() {
@@ -115,21 +125,21 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 			return;
 		}
 		int size = input.readableBytes();
-		if (size <= TransportFrame.MAX_FRAME_BYTES) {
+		if (size <= maximumFrameBytes) {
 			ByteBuf frame = Unpooled.wrappedBuffer(TransportFrameCodec.data(input.nioBuffer()));
 			input.release();
 			DebugLog.log("SERVER", debugId, "framed write bytes=%d writable=%s", frame.readableBytes(), channel.isWritable());
 			context.write(frame, promise);
 			return;
 		}
-		// The peer rejects frames above the cap, so one write above it is split into the frames it
-		// will accept; the caller's promise fails if any chunk fails and completes once all are on
-		// the wire.
+		// The peer accepts up to the protocol ceiling, but the caller's send cap bounds the per-frame
+		// buffer; one write above it is split. The caller's promise fails if any chunk fails and
+		// completes once all are on the wire.
 		PromiseCombiner combiner = new PromiseCombiner(context.executor());
 		try {
 			int offset = 0;
 			while (offset < size) {
-				int chunkBytes = Math.min(size - offset, TransportFrame.MAX_FRAME_BYTES);
+				int chunkBytes = Math.min(size - offset, maximumFrameBytes);
 				ByteBuf frame = Unpooled.wrappedBuffer(TransportFrameCodec.data(input.nioBuffer(input.readerIndex() + offset, chunkBytes)));
 				offset += chunkBytes;
 				combiner.add(context.write(frame, context.newPromise()));
@@ -138,7 +148,7 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 		} finally {
 			input.release();
 		}
-		DebugLog.log("SERVER", debugId, "framed write split chunks=%d bytes=%d writable=%s", (size + TransportFrame.MAX_FRAME_BYTES - 1) / TransportFrame.MAX_FRAME_BYTES, size, channel.isWritable());
+		DebugLog.log("SERVER", debugId, "framed write split chunks=%d bytes=%d writable=%s", (size + maximumFrameBytes - 1) / maximumFrameBytes, size, channel.isWritable());
 	}
 
 	@Override
@@ -175,7 +185,9 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 				closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", cause));
 				return;
 			}
-			DebugLog.log("SERVER", debugId, "write complete plaintext=%d totalSent=%d writable=%s", data.remaining(), sentBytes.addAndGet(data.remaining()), channel.isWritable());
+			if (DebugLog.enabled()) {
+				DebugLog.log("SERVER", debugId, "write complete plaintext=%d totalSent=%d writable=%s", data.remaining(), sentBytes.addAndGet(data.remaining()), channel.isWritable());
+			}
 			result.complete(null);
 		});
 		return result;

@@ -62,11 +62,19 @@ The handshake still presents the logical host and port; only the socket changes.
 ### The marker
 
 A marker UUID is built by `HolepunchMarker`: 122 payload bits packed into an RFC 4122 v4-shaped
-UUID. The payload is an 80-bit constant (SHA-256 of `mcholepunch:marker-hash`, truncated), a
-version byte, a flags byte, and a 26-bit random nonce. The first 96 bits are XOR-masked with
-SHA-256 of `mcholepunch:uuid-mask` keyed by the nonce, so the constant does not appear in the
+UUID. The payload is an 80-bit constant (SHA-256 of `mcholepunch:marker-hash`, truncated, by
+default), a version byte, a flags byte, and a 26-bit random nonce. The first 96 bits are XOR-masked
+with SHA-256 of `mcholepunch:uuid-mask` keyed by the nonce, so the constant does not appear in the
 clear. Decoding reverses the mask with the received nonce and compares the constant. A random
 UUID passes with probability 2^-96; a real account UUID never does.
+
+A deployment can replace the 80-bit constant: supply the same 10 bytes on both ends —
+`HolepunchOptions.Builder.markerConstant` on the client and the matching
+`NettyLoginClaimHandler.install` overload on the server — and only that deployment's clients are
+claimed by its servers; a stock client and a customized server replay each other's logins to
+vanilla. The constant is a routing key, not a secret: it never authenticates anything, and the
+marker UUID itself is always built by the library, because the claim step must be able to decode
+it.
 
 ### The transport handoff
 
@@ -111,9 +119,10 @@ takeover machinery itself, and everything under `internal`, can all change witho
 Tuning lives in `HolepunchOptions`: username (a random one is generated when absent), the Forge
 and NeoForge `\0FML3\0` host suffix, connect and negotiation timeouts (10 s each), and the
 executor that runs client callbacks (ForkJoinPool common pool by default). The client imposes no
-pending-write cap: a write blocks its caller until the socket takes the bytes, so backpressure is
-the caller's own blocking. The server's pending-write cap is the one value passed to
-`NettyChannelRegistry.register`.
+pending-write cap: the stage returned by `write` completes only once the bytes reached the socket,
+so apply backpressure by waiting on it before queueing more. The server's pending-write budget is the one value passed to
+`NettyChannelRegistry.register`; Netty applies it as a write-buffer water mark (`isWritable()`),
+not a hard cap.
 
 ## What it is not
 

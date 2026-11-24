@@ -36,6 +36,12 @@ import pl.skidam.mcholepunch.server.netty.NettyChannelRegistry.Registration;
  */
 public final class NettyLoginNegotiator {
 	public static final Duration DEFAULT_RESPONSE_TIMEOUT = Duration.ofSeconds(10);
+	/**
+	 * The negotiation phase only carries the encryption exchange, under 1.2 KB per frame; a small
+	 * cap keeps a client drip-feeding one oversized frame from copying a growing buffer on every
+	 * read for the whole response window.
+	 */
+	private static final int NEGOTIATION_MAX_FRAME_BYTES = 64 * 1024;
 	/** The challenge mirrors vanilla's login verify token, which is four bytes. */
 	private static final int CHALLENGE_BYTES = 4;
 
@@ -83,7 +89,7 @@ public final class NettyLoginNegotiator {
 			// keep the wire vanilla-shaped.
 			ChannelPipeline pipeline = channel.pipeline();
 			pipeline.toMap().forEach((name, handler) -> pipeline.remove(handler));
-			pipeline.addLast(VanillaFrameDecoder.HANDLER_NAME, new VanillaFrameDecoder(LoginCodec.MAX_FRAME_BYTES));
+			pipeline.addLast(VanillaFrameDecoder.HANDLER_NAME, new VanillaFrameDecoder(NEGOTIATION_MAX_FRAME_BYTES));
 			pipeline.addLast(RESPONSE_HANDLER_NAME, new ResponseHandler());
 			pipeline.addLast(VanillaFrameEncoder.HANDLER_NAME, new VanillaFrameEncoder());
 			channel.config().setAutoRead(true);

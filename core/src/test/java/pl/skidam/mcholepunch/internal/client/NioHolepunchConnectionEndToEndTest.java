@@ -1,7 +1,9 @@
 package pl.skidam.mcholepunch.internal.client;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -14,6 +16,7 @@ import java.nio.channels.SocketChannel;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -21,6 +24,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import org.junit.jupiter.api.Test;
@@ -123,6 +127,119 @@ class NioHolepunchConnectionEndToEndTest {
 		}
 	}
 
+	/** A silent server must end the connect future at the negotiation deadline, not block the read forever. */
+	@Test
+	void silentServerTimesOutAtTheNegotiationDeadline() throws Exception {
+		ServerSocketChannel listener = ServerSocketChannel.open();
+		listener.bind(new InetSocketAddress(InetAddress.getLoopbackAddress(), 0));
+		SocketChannel[] peer = new SocketChannel[1];
+		Thread acceptor = new Thread(() -> {
+			try {
+				peer[0] = listener.accept();
+			} catch (IOException ignored) {
+			}
+		}, "mcholepunch-silent-server");
+		acceptor.setDaemon(true);
+		acceptor.start();
+		try (listener) {
+			HolepunchRoute route = HolepunchRoute.at("server.test", 25565, (InetSocketAddress) listener.socket().getLocalSocketAddress());
+			HolepunchOptions options = HolepunchOptions.builder().connectTimeout(Duration.ofSeconds(5)).negotiationTimeout(Duration.ofMillis(500)).build();
+			HolepunchRequest request = new HolepunchRequest(route, 763, new HolepunchHandler() {
+			}, options);
+			NioHolepunchClient client = new NioHolepunchClient(new VanillaAddressResolver() {
+				@Override
+				public HolepunchRoute resolve(String host, int port) {
+					return route;
+				}
+			});
+
+			long startNanos = System.nanoTime();
+			ExecutionException failure = assertThrows(ExecutionException.class, () -> client.connect(request).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+			long elapsedMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNanos);
+			assertInstanceOf(HolepunchFailure.class, failure.getCause());
+			assertEquals(HolepunchFailure.Kind.TIMEOUT, ((HolepunchFailure) failure.getCause()).kind());
+			assertTrue(elapsedMillis < 4000, "the negotiation deadline must break the blocked read, took " + elapsedMillis + "ms");
+		} finally {
+			if (peer[0] != null) {
+				peer[0].close();
+			}
+			acceptor.join(1000);
+			listener.close();
+		}
+	}
+
+	/** The README's install example writes right after the query, so the first bytes can share the query's TCP read. */
+	@Test
+	void deliversApplicationBytesCoalescedWithTheTakeoverQuery() throws Exception {
+		List<String> events = Collections.synchronizedList(new ArrayList<>());
+		CountDownLatch readLatch = new CountDownLatch(1);
+		HolepunchHandler handler = new HolepunchHandler() {
+			@Override
+			public void onOpen(HolepunchConnection connection) {
+				events.add("open");
+			}
+
+			@Override
+			public void onRead(ByteBuffer data) {
+				events.add("read:" + text(data));
+				readLatch.countDown();
+			}
+
+			@Override
+			public void onClosed(HolepunchFailure failure) {
+				events.add("closed");
+			}
+		};
+
+		try (TestServer server = new TestServer()) {
+			server.writeInitialDataWithTakeoverQuery(ByteBuffer.wrap("early".getBytes(StandardCharsets.UTF_8)));
+			server.start();
+			HolepunchRoute route = server.route();
+			HolepunchRequest request = new HolepunchRequest(route, 763, handler, HolepunchOptions.builder().build());
+			NioHolepunchClient client = new NioHolepunchClient(new VanillaAddressResolver() {
+				@Override
+				public HolepunchRoute resolve(String host, int port) {
+					return route;
+				}
+			});
+
+			HolepunchConnection connection = client.connect(request).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			assertTrue(readLatch.await(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS));
+			assertEquals(List.of("open", "read:early"), List.copyOf(events).subList(0, 2), "bytes coalesced with the query must surface as initial data after onOpen");
+
+			connection.write(ByteBuffer.wrap("ping".getBytes(StandardCharsets.UTF_8))).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+			assertTrue(server.awaitClientData("ping"), "the connection must keep working after a coalesced first read");
+			assertNull(server.failure());
+			connection.close();
+		}
+	}
+
+	/**
+	 * A commit that races a close must always complete: fail() used to shut the writer down before
+	 * the commit future was stored, leaving a committer waiting forever. The interleaving is a
+	 * narrow window, so this hammers it instead of pinning the exact timing.
+	 */
+	@Test
+	void commitsRacingClosesAlwaysComplete() throws Exception {
+		for (int attempt = 0; attempt < 25; attempt++) {
+			try (TestServer server = new TestServer()) {
+				server.start();
+				HolepunchRoute route = server.route();
+				HolepunchRequest request = new HolepunchRequest(route, 763, new HolepunchHandler() {
+				}, HolepunchOptions.builder().build());
+				HolepunchConnection connection = new NioHolepunchClient().connect(request).toCompletableFuture().get(TEST_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+				CompletionStage<Void> commit = connection.commitTransportUpgrade();
+				connection.close();
+				try {
+					commit.toCompletableFuture().get(5, TimeUnit.SECONDS);
+				} catch (ExecutionException expected) {
+					// Closing during the commit flight fails the commit; what must never happen is a hang.
+				}
+			}
+		}
+	}
+
 	private static String text(ByteBuffer data) {
 		byte[] bytes = new byte[data.remaining()];
 		data.duplicate().get(bytes);
@@ -141,6 +258,7 @@ class NioHolepunchConnectionEndToEndTest {
 		private final CountDownLatch running = new CountDownLatch(1);
 		private final ArrayDeque<ByteBuffer> loginFrames = new ArrayDeque<>();
 		private volatile IOException failure;
+		private volatile ByteBuffer initialDataWithQuery;
 		private SocketChannel channel;
 		private TransportEncryption encryption;
 		private TransportHandoff handoff;
@@ -161,6 +279,11 @@ class NioHolepunchConnectionEndToEndTest {
 			Thread thread = new Thread(this::serve, "mcholepunch-test-server");
 			thread.setDaemon(true);
 			thread.start();
+		}
+
+		/** Appends the first application data frame to the takeover query's TCP write; call before {@link #start()}. */
+		void writeInitialDataWithTakeoverQuery(ByteBuffer payload) {
+			initialDataWithQuery = payload;
 		}
 
 		private void serve() {
@@ -197,7 +320,19 @@ class NioHolepunchConnectionEndToEndTest {
 			ByteBuffer query = LoginCodec.takeoverQueryPacket(0);
 			byte[] queryBytes = new byte[query.remaining()];
 			query.get(queryBytes);
-			writeEncrypted(channel, MinecraftFrameWriter.frame(queryBytes));
+			ByteBuffer initialData = initialDataWithQuery;
+			if (initialData == null) {
+				writeEncrypted(channel, MinecraftFrameWriter.frame(queryBytes));
+			} else {
+				// One TCP write carrying the takeover query and the first data frame, the way a server
+				// that greets the client right after the query produces.
+				ByteBuffer queryFrame = MinecraftFrameWriter.frame(queryBytes);
+				ByteBuffer combined = ByteBuffer.allocate(queryFrame.remaining() + TransportFrameCodec.data(initialData.duplicate()).remaining());
+				combined.put(queryFrame);
+				combined.put(TransportFrameCodec.data(initialData));
+				combined.flip();
+				writeEncrypted(channel, combined);
+			}
 		}
 
 		/** Reads one Minecraft-framed login packet, tolerating coalesced frames across TCP reads. */

@@ -53,4 +53,16 @@ public final class TransportFeed {
 			}
 		}
 	}
+
+	/**
+	 * Frames bytes that are already decrypted, such as the leftovers of the takeover read: the
+	 * takeover query is parsed out of a decrypted buffer, so whatever trailed it in the same TCP
+	 * read must not go through the cipher a second time. Feeding it here keeps partial frames in
+	 * the same reader state the encrypted era continues with.
+	 */
+	public void feedPlaintext(ByteBuffer plaintextInput, Consumer<TransportFrame> frames) throws IOException {
+		for (TransportFrame frame : reader.feed(plaintextInput)) {
+			frames.accept(frame);
+		}
+	}
 }

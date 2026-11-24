@@ -15,8 +15,20 @@ import pl.skidam.mcholepunch.internal.HolepunchRequest;
 import pl.skidam.mcholepunch.internal.net.VanillaAddressResolver;
 
 public final class NioHolepunchClient {
-	private static final ExecutorService CONNECT_EXECUTOR = Executors.newCachedThreadPool(runnable -> {
+	/**
+	 * Bounds concurrent connect work: each attempt holds a thread for the whole negotiation, so an
+	 * unbounded pool would let stalled networks grow the thread count. This client is one
+	 * connection per game client; four threads cover retries, and excess requests queue behind
+	 * them. Resolve runs on its own small pool so a caller who blocks inside a resolve callback on
+	 * a connect future cannot starve the connects of their threads.
+	 */
+	private static final ExecutorService CONNECT_EXECUTOR = Executors.newFixedThreadPool(4, runnable -> {
 		Thread thread = new Thread(runnable, "mcholepunch-connect");
+		thread.setDaemon(true);
+		return thread;
+	});
+	private static final ExecutorService RESOLVE_EXECUTOR = Executors.newFixedThreadPool(2, runnable -> {
+		Thread thread = new Thread(runnable, "mcholepunch-resolve");
 		thread.setDaemon(true);
 		return thread;
 	});
@@ -38,7 +50,7 @@ public final class NioHolepunchClient {
 			} catch (Exception e) {
 				throw new CompletionException(e);
 			}
-		}, CONNECT_EXECUTOR);
+		}, RESOLVE_EXECUTOR);
 	}
 
 	public CompletionStage<HolepunchConnection> connect(HolepunchRequest request) {

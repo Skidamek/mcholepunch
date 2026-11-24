@@ -41,4 +41,21 @@ class NioHolepunchClientTest {
 		assertThrows(Exception.class, () -> new NioHolepunchClient(resolver).connect(request).toCompletableFuture().get(5, TimeUnit.SECONDS));
 		assertEquals(0, resolutions.get());
 	}
+
+	@Test
+	void resolveRunsOnItsOwnPoolAndReturnsTheRoute() throws Exception {
+		int port;
+		try (ServerSocket socket = new ServerSocket(0, 1, InetAddress.getLoopbackAddress())) {
+			port = socket.getLocalPort();
+		}
+		HolepunchRoute route = new NioHolepunchClient(new VanillaAddressResolver() {
+			@Override
+			public HolepunchRoute resolve(String host, int resolvedPort) {
+				assertEquals("minecraft.example", host);
+				return HolepunchRoute.at(host, resolvedPort, new InetSocketAddress(InetAddress.getLoopbackAddress(), port));
+			}
+		}).resolve("minecraft.example", 25565).toCompletableFuture().get(5, TimeUnit.SECONDS);
+		assertEquals(25565, route.handshakePort());
+		assertEquals(port, route.transportAddress().getPort());
+	}
 }

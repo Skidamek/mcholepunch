@@ -11,8 +11,10 @@ import java.util.concurrent.ThreadLocalRandom;
 public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 	public static final int CURRENT_PROTOCOL_VERSION = 1;
 	public static final int SUPPORTED_FLAGS = 0;
+	/** The marker constant is the fixed 80-bit prefix a marker UUID must decode against. */
+	public static final int MARKER_CONSTANT_BYTES = 10;
 	private static final byte[] MASK_DOMAIN = "mcholepunch:uuid-mask".getBytes(StandardCharsets.UTF_8);
-	private static final byte[] FIXED_MARKER = markerHash();
+	private static final byte[] DEFAULT_MARKER_CONSTANT = markerHash();
 	private static final int[] PAYLOAD_BIT_POSITIONS = payloadBitPositions();
 
 	public HolepunchMarker {
@@ -22,12 +24,27 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 		if (flags < 0 || flags > 255) {
 			throw new IllegalArgumentException("flags must fit in one byte");
 		}
+		if ((flags & ~SUPPORTED_FLAGS) != 0) {
+			// decode rejects flags this build does not speak, so creating such a marker would only
+			// ship a login the peer refuses; fail here where the cause is local.
+			throw new IllegalArgumentException("unsupported flags: " + flags);
+		}
 		if (nonce < 0 || nonce >= (1 << 26)) {
 			throw new IllegalArgumentException("nonce must fit in 26 bits");
 		}
 	}
 
 	public static UUID create(int flags, int nonce) {
+		return create(DEFAULT_MARKER_CONSTANT, flags, nonce);
+	}
+
+	/**
+	 * Builds a marker UUID under the supplied 80-bit constant. Two ends only recognize each other's
+	 * logins when they share the constant, which is how one deployment keeps another integration's
+	 * clients from claiming into its server; the constant is a routing key, not a secret.
+	 */
+	public static UUID create(byte[] markerConstant, int flags, int nonce) {
+		byte[] constant = requireMarkerConstant(markerConstant);
 		HolepunchMarker marker = new HolepunchMarker(CURRENT_PROTOCOL_VERSION, flags, nonce);
 		byte[] mask = nonceMask(nonce);
 		long most = 0;
@@ -36,7 +53,7 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 		// below then stamp those two in place, so encode and decode share one layout definition.
 		for (int index = 0; index < PAYLOAD_BIT_POSITIONS.length; index++) {
 			int bit = PAYLOAD_BIT_POSITIONS[index];
-			if (!payloadBit(marker, mask, index)) {
+			if (!payloadBit(constant, marker, mask, index)) {
 				continue;
 			}
 			if (bit >= 64) {
@@ -55,6 +72,11 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 	}
 
 	public static Optional<HolepunchMarker> decode(UUID uuid) {
+		return decode(DEFAULT_MARKER_CONSTANT, uuid);
+	}
+
+	public static Optional<HolepunchMarker> decode(byte[] markerConstant, UUID uuid) {
+		byte[] constant = requireMarkerConstant(markerConstant);
 		if (uuid == null || uuid.version() != 4 || uuid.variant() != 2) {
 			return Optional.empty();
 		}
@@ -69,7 +91,7 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 			payload[index] ^= bit(mask, index);
 		}
 		for (int index = 0; index < 80; index++) {
-			if (payload[index] != bit(FIXED_MARKER, index)) {
+			if (payload[index] != bit(constant, index)) {
 				return Optional.empty();
 			}
 		}
@@ -81,14 +103,23 @@ public record HolepunchMarker(int protocolVersion, int flags, int nonce) {
 		return Optional.of(new HolepunchMarker(protocolVersion, flags, nonce));
 	}
 
-	public UUID uuid() {
-		return create(flags, nonce);
+	/** Validates a caller-supplied constant and returns a defensive copy. */
+	public static byte[] requireMarkerConstant(byte[] constant) {
+		if (constant == null || constant.length != MARKER_CONSTANT_BYTES) {
+			throw new IllegalArgumentException("the marker constant must be exactly " + MARKER_CONSTANT_BYTES + " bytes (80 bits)");
+		}
+		return constant.clone();
 	}
 
-	private static boolean payloadBit(HolepunchMarker marker, byte[] mask, int index) {
+	/** The constant this build recognizes when no caller supplies one. */
+	public static byte[] defaultMarkerConstant() {
+		return DEFAULT_MARKER_CONSTANT.clone();
+	}
+
+	private static boolean payloadBit(byte[] constant, HolepunchMarker marker, byte[] mask, int index) {
 		boolean value;
 		if (index < 80) {
-			value = bit(FIXED_MARKER, index);
+			value = bit(constant, index);
 		} else if (index < 88) {
 			value = ((marker.protocolVersion >>> (87 - index)) & 1) != 0;
 		} else if (index < 96) {

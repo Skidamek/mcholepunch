@@ -9,6 +9,11 @@ public final class NettyChannelRegistry {
 
 	private NettyChannelRegistry() {}
 
+	/**
+	 * @param maximumPendingWriteBytes
+	 *            write-buffer water mark for taken-over channels
+	 *            ({@code channel.isWritable()}), not a hard cap
+	 */
 	public static Registration register(long maximumPendingWriteBytes, HolepunchChannelApplication application) {
 		Objects.requireNonNull(application, "application");
 		if (maximumPendingWriteBytes <= 0) {

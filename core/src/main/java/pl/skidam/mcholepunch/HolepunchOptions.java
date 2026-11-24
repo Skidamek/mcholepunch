@@ -2,10 +2,12 @@ package pl.skidam.mcholepunch;
 
 import java.time.Duration;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ForkJoinPool;
 
 import pl.skidam.mcholepunch.internal.Usernames;
+import pl.skidam.mcholepunch.internal.protocol.HolepunchMarker;
 
 public final class HolepunchOptions {
 	public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
@@ -23,6 +25,7 @@ public final class HolepunchOptions {
 	private final Duration connectTimeout;
 	private final Duration negotiationTimeout;
 	private final Executor callbackExecutor;
+	private final byte[] markerConstant;
 
 	private HolepunchOptions(Builder builder) {
 		username = builder.username;
@@ -30,6 +33,7 @@ public final class HolepunchOptions {
 		connectTimeout = builder.connectTimeout;
 		negotiationTimeout = builder.negotiationTimeout;
 		callbackExecutor = builder.callbackExecutor;
+		markerConstant = builder.markerConstant;
 	}
 
 	public static Builder builder() {
@@ -56,12 +60,22 @@ public final class HolepunchOptions {
 		return callbackExecutor;
 	}
 
+	/**
+	 * The 80-bit marker constant this client packs into its marker UUID, when the caller replaces
+	 * the built-in one; empty when the built-in constant is used. Both ends of a deployment must
+	 * supply the same value or the server replays the login to vanilla.
+	 */
+	public Optional<byte[]> markerConstant() {
+		return markerConstant == null ? Optional.empty() : Optional.of(markerConstant.clone());
+	}
+
 	public static final class Builder {
 		private String username;
 		private String handshakeHostSuffix = "";
 		private Duration connectTimeout = DEFAULT_CONNECT_TIMEOUT;
 		private Duration negotiationTimeout = DEFAULT_NEGOTIATION_TIMEOUT;
 		private Executor callbackExecutor = ForkJoinPool.commonPool();
+		private byte[] markerConstant;
 
 		public Builder username(String username) {
 			this.username = Objects.requireNonNull(username, "username");
@@ -85,6 +99,16 @@ public final class HolepunchOptions {
 
 		public Builder callbackExecutor(Executor executor) {
 			callbackExecutor = Objects.requireNonNull(executor, "executor");
+			return this;
+		}
+
+		/**
+		 * Replaces the built-in 80-bit marker constant, so a deployment's logins are only claimed by
+		 * servers installed with the same value. The value is not a secret: it decides routing, and
+		 * anyone who reads it can still build a decodable marker.
+		 */
+		public Builder markerConstant(byte[] constant) {
+			markerConstant = HolepunchMarker.requireMarkerConstant(constant);
 			return this;
 		}
 

@@ -2,8 +2,8 @@ package pl.skidam.mcholepunch.internal.client;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
+import java.nio.channels.ClosedChannelException;
 import java.nio.channels.SocketChannel;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
@@ -17,6 +17,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -42,6 +43,12 @@ import pl.skidam.mcholepunch.internal.transport.TransportHandoff;
 
 final class NioHolepunchConnection implements HolepunchConnection {
 	private static final int TRANSFER_BUFFER_SIZE = 128 * 1024;
+	/**
+	 * Bounds blocking reads during negotiation: a blocking {@link SocketChannel#read} ignores
+	 * {@code SO_TIMEOUT}, so the only way to break one is to close the channel under it. One
+	 * daemon thread schedules every deadline close.
+	 */
+	private static final ScheduledExecutorService READ_DEADLINES = Executors.newSingleThreadScheduledExecutor(runnable -> daemon(runnable, "mcholepunch-read-deadline"));
 	private final long debugId;
 	private final SocketChannel channel;
 	private final HolepunchHandler handler;
@@ -67,6 +74,14 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private ByteBuffer encryptedOutput = ByteBuffer.allocate(8192);
 	private final TransportHandoff handoff = new TransportHandoff();
 	private final AtomicReference<CompletableFuture<Void>> commitResult = new AtomicReference<>();
+	/**
+	 * Guards every decision that must be atomic against the writer shutting down: a write's era
+	 * check, queue entry and enqueue; a commit's store, request and enqueue; and {@link #fail}'s
+	 * queue drain, commit-future completion and executor shutdown. All of these are enqueue-only
+	 * operations, so the critical sections never block, and writer FIFO then keeps each task in the
+	 * era its submitter saw.
+	 */
+	private final Object writerLock = new Object();
 
 	private NioHolepunchConnection(long debugId, SocketChannel channel, HolepunchRequest request, ClientNegotiation.Result result) throws GeneralSecurityException {
 		this.debugId = debugId;
@@ -88,7 +103,6 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		NioHolepunchConnection connection = new NioHolepunchConnection(debugId, channel, request, result);
 		DebugLog.log("CLIENT", debugId, "waiting for takeover query");
 		connection.awaitTakeover(result.deadline());
-		channel.socket().setSoTimeout(0);
 		DebugLog.log("CLIENT", debugId, "takeover complete; switching to coordinated transport initialBytes=%d", connection.initialDataSnapshot.length);
 		connection.dispatchOpen();
 		connection.dispatchInitialData();
@@ -98,15 +112,9 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private void awaitTakeover(long deadline) throws Exception {
 		ByteBuffer network = ByteBuffer.allocate(8192);
-		channel.socket().setSoTimeout(remainingMillis(deadline));
-		while (System.nanoTime() < deadline) {
+		while (true) {
 			network.clear();
-			int count;
-			try {
-				count = channel.read(network);
-			} catch (SocketTimeoutException exception) {
-				break;
-			}
+			int count = readWithDeadline(channel, network, deadline, "takeover timed out");
 			if (count < 0) {
 				throw new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "server closed during takeover", null);
 			}
@@ -122,18 +130,17 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				}
 				ByteBuffer trailing = frameReader.drainPending();
 				if (trailing.hasRemaining()) {
-					processTransportPlaintext(trailing);
+					// Already-decrypted leftovers of the takeover read: frames here were coalesced with
+					// the query by the server, so they must not go through the cipher again.
+					List<CompletionStage<Void>> deliveries = new ArrayList<>(2);
+					transportFeed.feedPlaintext(trailing, trailingFrame -> collectDelivery(trailingFrame, deliveries));
+					awaitDeliveries(deliveries);
 				}
 				takeoverComplete = true;
 				initialDataSnapshot = initialData.toByteArray();
 				return;
 			}
 		}
-		throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, "takeover timed out", null);
-	}
-
-	private static int remainingMillis(long deadline) {
-		return Math.toIntExact(Math.min(Integer.MAX_VALUE, TimeUnit.NANOSECONDS.toMillis(Math.max(1, deadline - System.nanoTime()))));
 	}
 
 	private void dispatchOpen() {
@@ -171,22 +178,27 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (size == 0) {
 			return CompletableFuture.completedFuture(null);
 		}
-		if (closed.get()) {
-			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
-		}
-		if (handoff.isCommitting()) {
-			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
-		}
 		CompletableFuture<Void> result = new CompletableFuture<>();
-		pendingWrites.add(result);
-		try {
-			// The blocking socket write runs on the writer thread so the returned future completes only
-			// once the bytes reached the wire; a caller bounding its wait (HolepunchSocket does) gets a
-			// deadline that can actually fire instead of a synchronous write the bound never observes.
-			writerExecutor.execute(() -> deliverWrite(copy, size, result));
-		} catch (RejectedExecutionException rejected) {
-			pendingWrites.remove(result);
-			result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+		// Under the writer lock so the era check, the queue entry and the enqueue are one unit: a
+		// write is either rejected up front or its task lands on the writer before the COMMIT task,
+		// which keeps the framing and the cipher in the era this caller saw.
+		synchronized (writerLock) {
+			if (closed.get()) {
+				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+			}
+			if (handoff.isCommitting()) {
+				return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
+			}
+			pendingWrites.add(result);
+			try {
+				// The blocking socket write runs on the writer thread so the returned future completes only
+				// once the bytes reached the wire; a caller bounding its wait (HolepunchSocket does) gets a
+				// deadline that can actually fire instead of a synchronous write the bound never observes.
+				writerExecutor.execute(() -> deliverWrite(copy, size, result));
+			} catch (RejectedExecutionException rejected) {
+				pendingWrites.remove(result);
+				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+			}
 		}
 		return result;
 	}
@@ -197,7 +209,19 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
 				return;
 			}
-			sendFrame(handoff.isRaw() ? data : TransportFrameCodec.data(data));
+			if (handoff.isRaw()) {
+				sendFrame(data);
+			} else {
+				// The peer rejects frames above the cap, so one write is split into the frames it will
+				// accept instead of succeeding here and being dropped there.
+				while (data.hasRemaining()) {
+					int chunkBytes = Math.min(data.remaining(), TransportFrame.MAX_FRAME_BYTES);
+					ByteBuffer chunk = data.slice();
+					chunk.limit(chunkBytes);
+					sendFrame(TransportFrameCodec.data(chunk));
+					data.position(data.position() + chunkBytes);
+				}
+			}
 			DebugLog.log("CLIENT", debugId, "write complete plaintext=%d totalSent=%d", size, sentBytes.addAndGet(size));
 			result.complete(null);
 		} catch (Throwable throwable) {
@@ -233,8 +257,63 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		}
 	}
 
+	/**
+	 * Blocking read bounded by the deadline: the deadline task closes the channel, which unblocks
+	 * the read as an asynchronous close, and that close maps to TIMEOUT. Runs the read on the
+	 * caller's thread; only the deadline close comes from the shared scheduler.
+	 */
+	static int readWithDeadline(SocketChannel channel, ByteBuffer destination, long deadlineNanos, String timeoutMessage) throws IOException {
+		long remainingNanos = deadlineNanos - System.nanoTime();
+		if (remainingNanos <= 0) {
+			throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, timeoutMessage, null);
+		}
+		AtomicBoolean timedOut = new AtomicBoolean();
+		ScheduledFuture<?> deadlineTask = READ_DEADLINES.schedule(() -> {
+			// The deadline and the read race to claim the outcome: the task closes the channel only
+			// when it wins the claim, so a read that returned first can never lose its connection to
+			// a close that started after the data was already in hand.
+			if (timedOut.compareAndSet(false, true)) {
+				closeQuietly(channel);
+			}
+		}, remainingNanos, TimeUnit.NANOSECONDS);
+		try {
+			int count = channel.read(destination);
+			// The read claims the outcome too: if the deadline task already claimed it, the channel
+			// is closed and whatever arrived is past the budget. A success claimed here keeps the
+			// channel alive even when a delayed scheduler has not fired the task yet; the wall-clock
+			// check keeps that late success from slipping past the deadline.
+			if (!timedOut.compareAndSet(false, true) || System.nanoTime() >= deadlineNanos) {
+				throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, timeoutMessage, null);
+			}
+			return count;
+		} catch (ClosedChannelException exception) {
+			// Mid-read the close surfaces as AsynchronousCloseException (a subclass); between reads as
+			// ClosedChannelException. Only the deadline task closes a negotiating channel, so past the
+			// deadline both mean the read ended because the negotiation budget ran out.
+			if (System.nanoTime() >= deadlineNanos) {
+				throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, timeoutMessage, exception);
+			}
+			throw exception;
+		} finally {
+			deadlineTask.cancel(false);
+		}
+	}
+
+	private static void closeQuietly(SocketChannel channel) {
+		try {
+			channel.close();
+		} catch (IOException ignored) {
+		}
+	}
+
 	@Override
 	public CompletionStage<Void> commitTransportUpgrade() {
+		synchronized (writerLock) {
+			return beginCommit();
+		}
+	}
+
+	private CompletionStage<Void> beginCommit() {
 		if (closed.get()) {
 			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
 		}
@@ -256,6 +335,9 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				writerExecutor.execute(() -> {
 					try {
 						if (closed.get()) {
+							// fail() may have run before the future landed in commitResult; every exit
+							// from this task must complete it so a committer never waits forever.
+							result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
 							return;
 						}
 						sendFrame(TransportFrameCodec.commit());
@@ -267,7 +349,11 @@ final class NioHolepunchConnection implements HolepunchConnection {
 					}
 				});
 			} catch (RejectedExecutionException rejected) {
-				fail(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null));
+				// fail() earlier in this race saw no commit future to complete (it was stored after its
+				// check) and already closed the connection, so finish this future here.
+				HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection is closed", null);
+				result.completeExceptionally(failure);
+				fail(failure);
 			}
 		}
 		return result;
@@ -321,12 +407,25 @@ final class NioHolepunchConnection implements HolepunchConnection {
 
 	private void processTransportPlaintext(ByteBuffer encryptedInput) throws IOException {
 		List<CompletionStage<Void>> deliveries = new ArrayList<>(2);
-		transportFeed.feed(encryptedInput, frame -> {
-			switch (frame.type()) {
-				case DATA -> deliveries.add(handleData(frame.payload()));
-				case COMMIT -> receiveControl();
+		transportFeed.feed(encryptedInput, frame -> collectDelivery(frame, deliveries));
+		awaitDeliveries(deliveries);
+	}
+
+	private void collectDelivery(TransportFrame frame, List<CompletionStage<Void>> deliveries) {
+		switch (frame.type()) {
+			// Data that arrives before the takeover completed is buffered for the post-open dispatch,
+			// which handleData reports with a null delivery: nothing to await yet.
+			case DATA -> {
+				CompletionStage<Void> delivered = handleData(frame.payload());
+				if (delivered != null) {
+					deliveries.add(delivered);
+				}
 			}
-		});
+			case COMMIT -> receiveControl();
+		}
+	}
+
+	private void awaitDeliveries(List<CompletionStage<Void>> deliveries) throws IOException {
 		for (CompletionStage<Void> delivered : deliveries) {
 			awaitRead(delivered);
 		}
@@ -443,19 +542,32 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		synchronized (readFlow) {
 			readFlow.notifyAll();
 		}
-		CompletableFuture<Void> pending;
-		while ((pending = pendingWrites.poll()) != null) {
-			pending.completeExceptionally(failure);
-		}
 		try {
 			channel.close();
 		} catch (IOException exception) {
 			failure.addSuppressed(exception);
 		}
-		CompletableFuture<Void> commit = commitResult.get();
-		if (commit != null) commit.completeExceptionally(failure);
-		writerExecutor.shutdownNow();
+		// The writer lock owns the removal, not the completion: draining the queues and shutting the
+		// writer down under it keeps a racing write either drained or rejected up front, while the
+		// futures themselves are completed after the lock because completeExceptionally runs user
+		// callbacks synchronously and those must never run under the lock.
+		List<CompletableFuture<Void>> abandoned = new ArrayList<>();
+		CompletableFuture<Void> commit;
+		synchronized (writerLock) {
+			CompletableFuture<Void> pending;
+			while ((pending = pendingWrites.poll()) != null) {
+				abandoned.add(pending);
+			}
+			commit = commitResult.get();
+			writerExecutor.shutdownNow();
+		}
 		readerExecutor.shutdownNow();
+		for (CompletableFuture<Void> abandonedWrite : abandoned) {
+			abandonedWrite.completeExceptionally(failure);
+		}
+		if (commit != null) {
+			commit.completeExceptionally(failure);
+		}
 		callbackExecutor.execute(() -> handler.onClosed(failure));
 	}
 

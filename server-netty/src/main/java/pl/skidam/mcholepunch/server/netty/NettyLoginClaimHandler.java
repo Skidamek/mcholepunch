@@ -27,6 +27,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 	private static final String HANDLER_NAME = "mcholepunch-login-claim";
 
 	private final KeyPair keyPair;
+	private final byte[] markerConstant;
 	private ByteBuf handshake;
 	private ScheduledFuture<?> heldHandshakeExpiry;
 
@@ -35,8 +36,22 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 		pipeline.addAfter(VANILLA_INBOUND_ANCHOR, HANDLER_NAME, new NettyLoginClaimHandler(keyPair));
 	}
 
+	/**
+	 * Installs the claim handler for a deployment that replaces the built-in 80-bit marker
+	 * constant; the client must be configured with the same value or its logins are replayed to
+	 * vanilla instead of claimed.
+	 */
+	public static void install(ChannelPipeline pipeline, KeyPair keyPair, byte[] markerConstant) {
+		pipeline.addAfter(VANILLA_INBOUND_ANCHOR, HANDLER_NAME, new NettyLoginClaimHandler(keyPair, markerConstant));
+	}
+
 	public NettyLoginClaimHandler(KeyPair keyPair) {
+		this(keyPair, HolepunchMarker.defaultMarkerConstant());
+	}
+
+	public NettyLoginClaimHandler(KeyPair keyPair, byte[] markerConstant) {
 		this.keyPair = keyPair;
+		this.markerConstant = HolepunchMarker.requireMarkerConstant(markerConstant);
 	}
 
 	@Override
@@ -136,7 +151,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 		}
 	}
 
-	private static Optional<HolepunchMarker> markerOf(LoginCodec.LoginStart loginStart) {
-		return HolepunchMarker.decode(loginStart.profileId());
+	private Optional<HolepunchMarker> markerOf(LoginCodec.LoginStart loginStart) {
+		return HolepunchMarker.decode(markerConstant, loginStart.profileId());
 	}
 }

@@ -5,6 +5,7 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -20,6 +21,7 @@ import io.netty.channel.ChannelOutboundHandlerAdapter;
 import io.netty.channel.ChannelPromise;
 import io.netty.channel.WriteBufferWaterMark;
 import io.netty.util.ReferenceCountUtil;
+import io.netty.util.concurrent.PromiseCombiner;
 
 import pl.skidam.mcholepunch.HolepunchConnection;
 import pl.skidam.mcholepunch.HolepunchFailure;
@@ -110,10 +112,31 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 			context.write(input, promise);
 			return;
 		}
-		ByteBuf frame = Unpooled.wrappedBuffer(TransportFrameCodec.data(input.nioBuffer()));
-		input.release();
-		DebugLog.log("SERVER", debugId, "framed write bytes=%d writable=%s", frame.readableBytes(), channel.isWritable());
-		context.write(frame, promise);
+		int size = input.readableBytes();
+		if (size <= TransportFrame.MAX_FRAME_BYTES) {
+			ByteBuf frame = Unpooled.wrappedBuffer(TransportFrameCodec.data(input.nioBuffer()));
+			input.release();
+			DebugLog.log("SERVER", debugId, "framed write bytes=%d writable=%s", frame.readableBytes(), channel.isWritable());
+			context.write(frame, promise);
+			return;
+		}
+		// The peer rejects frames above the cap, so one write above it is split into the frames it
+		// will accept; the caller's promise fails if any chunk fails and completes once all are on
+		// the wire.
+		PromiseCombiner combiner = new PromiseCombiner(context.executor());
+		try {
+			int offset = 0;
+			while (offset < size) {
+				int chunkBytes = Math.min(size - offset, TransportFrame.MAX_FRAME_BYTES);
+				ByteBuf frame = Unpooled.wrappedBuffer(TransportFrameCodec.data(input.nioBuffer(input.readerIndex() + offset, chunkBytes)));
+				offset += chunkBytes;
+				combiner.add(context.write(frame, context.newPromise()));
+			}
+			combiner.finish(promise);
+		} finally {
+			input.release();
+		}
+		DebugLog.log("SERVER", debugId, "framed write split chunks=%d bytes=%d writable=%s", (size + TransportFrame.MAX_FRAME_BYTES - 1) / TransportFrame.MAX_FRAME_BYTES, size, channel.isWritable());
 	}
 
 	@Override
@@ -126,14 +149,28 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 		if (data == null) {
 			return CompletableFuture.failedFuture(new NullPointerException("data"));
 		}
+		if (closed.get()) {
+			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
+		}
+		if (handoff.isCommitting()) {
+			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport commit in flight", null));
+		}
 		CompletableFuture<Void> result = new CompletableFuture<>();
 		// The framer owns the era checks and the framing; writing through the channel keeps one
 		// copy of those rules for pipeline writes and this API alike.
 		channel.writeAndFlush(Unpooled.wrappedBuffer(data.duplicate())).addListener((ChannelFutureListener) completed -> {
 			if (!completed.isSuccess()) {
-				DebugLog.failure("SERVER", debugId, "Netty write failed", completed.cause());
-				result.completeExceptionally(completed.cause());
-				closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", completed.cause()));
+				Throwable cause = completed.cause();
+				if (cause instanceof HolepunchFailure failure) {
+					// The framer rejected this call (commit window or already closed). That is policy
+					// for this one write, not a transport error: fail the write and leave the connection.
+					DebugLog.log("SERVER", debugId, "write rejected: %s", failure.getMessage());
+					result.completeExceptionally(failure);
+					return;
+				}
+				DebugLog.failure("SERVER", debugId, "Netty write failed", cause);
+				result.completeExceptionally(cause);
+				closeWith(new HolepunchFailure(HolepunchFailure.Kind.IO, "write failed", cause));
 				return;
 			}
 			DebugLog.log("SERVER", debugId, "write complete plaintext=%d totalSent=%d writable=%s", data.remaining(), sentBytes.addAndGet(data.remaining()), channel.isWritable());
@@ -158,19 +195,27 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 		if (!commitResult.compareAndSet(null, result)) {
 			return commitResult.get();
 		}
-		executeOnEventLoop(() -> {
-			if (closed.get()) {
-				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
-				return;
-			}
-			if (framerContext == null) {
-				result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport framer is not installed", null));
-				return;
-			}
-			if (handoff.requestCommit()) {
-				writeCommitControl();
-			}
-		});
+		try {
+			executeOnEventLoop(() -> {
+				if (closed.get()) {
+					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
+					return;
+				}
+				if (framerContext == null) {
+					result.completeExceptionally(new HolepunchFailure(HolepunchFailure.Kind.IO, "transport framer is not installed", null));
+					return;
+				}
+				if (handoff.requestCommit()) {
+					writeCommitControl();
+				}
+			});
+		} catch (RejectedExecutionException rejected) {
+			// A shutting-down event loop rejects the commit task; the stored future must not outlive
+			// the connection uncompleted, so finish it here and close.
+			HolepunchFailure failure = new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null);
+			result.completeExceptionally(failure);
+			closeWith(failure);
+		}
 		return result;
 	}
 

@@ -1,11 +1,11 @@
 package pl.skidam.mcholepunch.internal.client;
 
 import java.io.IOException;
-import java.net.SocketTimeoutException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SocketChannel;
 import java.security.PublicKey;
 import java.util.UUID;
+import java.util.concurrent.ThreadLocalRandom;
 
 import pl.skidam.mcholepunch.HolepunchFailure;
 import pl.skidam.mcholepunch.HolepunchOptions;
@@ -25,7 +25,8 @@ final class ClientNegotiation {
 	static Result negotiate(long debugId, SocketChannel channel, HolepunchRequest request, HolepunchRoute address) throws Exception {
 		HolepunchOptions options = request.options();
 		String username = Usernames.usernameOrDefault(options);
-		UUID marker = HolepunchMarker.random(0);
+		byte[] markerConstant = options.markerConstant().orElseGet(HolepunchMarker::defaultMarkerConstant);
+		UUID marker = HolepunchMarker.create(markerConstant, 0, ThreadLocalRandom.current().nextInt(1 << 26));
 		ByteBuffer handshake = LoginCodec.handshake(request.protocolVersion(), address.handshakeHost() + options.handshakeHostSuffix(), address.handshakePort());
 		DebugLog.log("CLIENT", debugId, "send handshake %s", DebugLog.preview(handshake));
 		NioHolepunchConnection.writeFully(channel, handshake);
@@ -37,15 +38,11 @@ final class ClientNegotiation {
 		CipherStreamState decryptor = null;
 		ByteBuffer network = ByteBuffer.allocate(8192);
 		long deadline = System.nanoTime() + options.negotiationTimeout().toNanos();
-		channel.socket().setSoTimeout(Math.toIntExact(options.negotiationTimeout().toMillis()));
-		while (System.nanoTime() < deadline) {
+		while (true) {
 			network.clear();
-			int count;
-			try {
-				count = channel.read(network);
-			} catch (SocketTimeoutException exception) {
-				throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, "negotiation timed out", exception);
-			}
+			// A blocking SocketChannel read ignores SO_TIMEOUT, so the deadline is enforced by closing
+			// the channel at the deadline rather than by a socket option.
+			int count = NioHolepunchConnection.readWithDeadline(channel, network, deadline, "negotiation timed out");
 			if (count < 0) {
 				throw new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "server closed during negotiation", null);
 			}
@@ -80,7 +77,6 @@ final class ClientNegotiation {
 				}
 			}
 		}
-		throw new HolepunchFailure(HolepunchFailure.Kind.TIMEOUT, "negotiation timed out", null);
 	}
 
 	record Result(byte[] secret, CipherStreamState decryptor, MinecraftFrameReader frameReader, long deadline) {}

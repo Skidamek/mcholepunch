@@ -10,7 +10,9 @@ version = project.property("mod_version") as String
 
 dependencies {
 	api(project(":core"))
-	api(libs.netty.all)
+	api(libs.netty.transport)
+	api(libs.netty.buffer)
+	api(libs.netty.codec)
 	testRuntimeOnly(libs.log4j.core)
 	testImplementation(platform(libs.junit.bom))
 	testImplementation(libs.junit.jupiter.api)

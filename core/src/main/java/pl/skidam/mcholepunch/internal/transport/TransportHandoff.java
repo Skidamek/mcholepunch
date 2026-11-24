@@ -10,10 +10,10 @@ package pl.skidam.mcholepunch.internal.transport;
  * the raw era.
  */
 public final class TransportHandoff {
-	private boolean localCommitRequested;
+	private volatile boolean localCommitRequested;
 	private boolean localCommitSent;
 	private boolean peerCommitReceived;
-	private boolean raw;
+	private volatile boolean raw;
 
 	/** Whether the caller must send the COMMIT control frame; false when a commit is already in flight or the raw era has started. */
 	public boolean requestCommit() {
@@ -58,15 +58,11 @@ public final class TransportHandoff {
 
 	/** Whether a commit is in flight: writes are rejected here because they can no longer land in either era correctly. */
 	public boolean isCommitting() {
-		synchronized (this) {
-			return !raw && localCommitRequested;
-		}
+		return !raw && localCommitRequested;
 	}
 
 	public boolean isRaw() {
-		synchronized (this) {
-			return raw;
-		}
+		return raw;
 	}
 
 	public Phase phase() {

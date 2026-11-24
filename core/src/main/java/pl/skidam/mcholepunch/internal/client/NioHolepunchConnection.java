@@ -71,6 +71,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private final ScheduledFuture<?> watchdog;
 	private final ByteArrayOutputStream initialData = new ByteArrayOutputStream();
 	private byte[] initialDataSnapshot = new byte[0];
+	private final ByteBuffer frameHeader = ByteBuffer.allocate(6);
 	private ByteBuffer encryptedOutput;
 	private final TransportHandoff handoff = new TransportHandoff();
 	private final AtomicReference<CompletableFuture<Void>> commitResult = new AtomicReference<>();
@@ -237,7 +238,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 					int chunkBytes = Math.min(data.remaining(), maximumFrameBytes);
 					ByteBuffer chunk = data.slice();
 					chunk.limit(chunkBytes);
-					sendFrame(TransportFrameCodec.data(chunk));
+					sendDataFrame(chunk);
 					data.position(data.position() + chunkBytes);
 				}
 			}
@@ -252,6 +253,24 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		} finally {
 			pendingWrites.remove(result);
 		}
+	}
+
+	/** Encrypts and writes one DATA frame directly from {@code payload} without copying it into an intermediate frame buffer. */
+	private void sendDataFrame(ByteBuffer payload) throws IOException {
+		int payloadBytes = payload.remaining();
+		int frameBytes = TransportFrameCodec.dataHeaderLength(payloadBytes) + payloadBytes;
+		frameHeader.clear();
+		TransportFrameCodec.writeDataHeader(frameHeader, payloadBytes);
+		frameHeader.flip();
+		ensureEncryptedCapacity(frameBytes);
+		encryptedOutput.clear();
+		int encryptedBytes = encryption.encrypt(frameHeader, encryptedOutput);
+		encryptedBytes += encryption.encrypt(payload, encryptedOutput);
+		encryptedOutput.flip();
+		if (DebugLog.enabled()) {
+			DebugLog.log("CLIENT", debugId, "sending frame plaintext=%d wire=%d", frameBytes, encryptedBytes);
+		}
+		writeFully(channel, encryptedOutput);
 	}
 
 	/** Encrypts and writes one frame; runs only on the writer thread, which confines the stateful cipher and the reuse buffer. */

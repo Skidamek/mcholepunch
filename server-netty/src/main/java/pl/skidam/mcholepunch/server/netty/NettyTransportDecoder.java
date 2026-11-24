@@ -28,6 +28,7 @@ public final class NettyTransportDecoder extends ByteToMessageDecoder {
 		while (input.isReadable()) {
 			if (feed.isRaw()) {
 				output.add(input.readRetainedSlice(input.readableBytes()));
+				context.pipeline().remove(this);
 				return;
 			}
 			for (ByteBuffer source : input.nioBuffers(input.readerIndex(), input.readableBytes())) {
@@ -51,6 +52,9 @@ public final class NettyTransportDecoder extends ByteToMessageDecoder {
 					break;
 				}
 			}
+		}
+		if (feed.isRaw()) {
+			context.pipeline().remove(this);
 		}
 	}
 }

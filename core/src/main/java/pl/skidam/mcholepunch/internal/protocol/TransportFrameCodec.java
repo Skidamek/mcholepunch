@@ -5,11 +5,19 @@ import java.nio.ByteBuffer;
 public final class TransportFrameCodec {
 	private TransportFrameCodec() {}
 
+	public static int dataHeaderLength(int payloadLength) {
+		return 1 + VarInts.encodedLength(payloadLength);
+	}
+
+	public static void writeDataHeader(ByteBuffer output, int payloadLength) {
+		output.put(TransportFrame.Type.DATA.wire());
+		VarInts.write(output, payloadLength);
+	}
+
 	public static ByteBuffer data(ByteBuffer payload) {
 		ByteBuffer input = payload.duplicate();
-		ByteBuffer frame = ByteBuffer.allocate(1 + VarInts.encodedLength(input.remaining()) + input.remaining());
-		frame.put(TransportFrame.Type.DATA.wire());
-		VarInts.write(frame, input.remaining());
+		ByteBuffer frame = ByteBuffer.allocate(dataHeaderLength(input.remaining()) + input.remaining());
+		writeDataHeader(frame, input.remaining());
 		frame.put(input);
 		return frame.flip();
 	}

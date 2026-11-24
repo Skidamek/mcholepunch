@@ -13,6 +13,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.buffer.CompositeByteBuf;
 import io.netty.buffer.Unpooled;
 import io.netty.channel.Channel;
 import io.netty.channel.ChannelFutureListener;
@@ -130,8 +131,7 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 		}
 		int size = input.readableBytes();
 		if (size <= maximumFrameBytes) {
-			ByteBuf frame = Unpooled.wrappedBuffer(TransportFrameCodec.data(input.nioBuffer()));
-			input.release();
+			CompositeByteBuf frame = frameData(context, input);
 			DebugLog.log("SERVER", debugId, "framed write bytes=%d writable=%s", frame.readableBytes(), channel.isWritable());
 			context.write(frame, promise);
 			return;
@@ -141,11 +141,9 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 		// completes once all are on the wire.
 		PromiseCombiner combiner = new PromiseCombiner(context.executor());
 		try {
-			int offset = 0;
-			while (offset < size) {
-				int chunkBytes = Math.min(size - offset, maximumFrameBytes);
-				ByteBuf frame = Unpooled.wrappedBuffer(TransportFrameCodec.data(input.nioBuffer(input.readerIndex() + offset, chunkBytes)));
-				offset += chunkBytes;
+			while (input.isReadable()) {
+				int chunkBytes = Math.min(input.readableBytes(), maximumFrameBytes);
+				CompositeByteBuf frame = frameData(context, input.readRetainedSlice(chunkBytes));
 				combiner.add(context.write(frame, context.newPromise()));
 			}
 			combiner.finish(promise);
@@ -153,6 +151,18 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 			input.release();
 		}
 		DebugLog.log("SERVER", debugId, "framed write split chunks=%d bytes=%d writable=%s", (size + maximumFrameBytes - 1) / maximumFrameBytes, size, channel.isWritable());
+	}
+
+	private static CompositeByteBuf frameData(ChannelHandlerContext context, ByteBuf payload) {
+		int payloadBytes = payload.readableBytes();
+		int headerBytes = TransportFrameCodec.dataHeaderLength(payloadBytes);
+		ByteBuf header = context.alloc().buffer(headerBytes, headerBytes);
+		ByteBuffer headerBuffer = ByteBuffer.allocate(headerBytes);
+		TransportFrameCodec.writeDataHeader(headerBuffer, payloadBytes);
+		header.writeBytes(headerBuffer.array(), 0, headerBytes);
+		CompositeByteBuf frame = context.alloc().compositeBuffer(2);
+		frame.addComponents(true, header, payload);
+		return frame;
 	}
 
 	@Override
@@ -275,6 +285,10 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	/** Flips the cipher and any committer to the raw era; called exactly once, when both COMMITs have crossed. */
 	private void activateRaw() {
 		encryption.activateRaw();
+		NettyCipherEncoder cipherEncoder = channel.pipeline().get(NettyCipherEncoder.class);
+		if (cipherEncoder != null) {
+			channel.pipeline().remove(cipherEncoder);
+		}
 		DebugLog.log("SERVER", debugId, "transport switched to raw pass-through");
 		CompletableFuture<Void> result = commitResult.get();
 		if (result != null) result.complete(null);

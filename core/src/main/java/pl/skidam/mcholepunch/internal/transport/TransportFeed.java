@@ -28,7 +28,11 @@ public final class TransportFeed {
 	}
 
 	public boolean isRaw() {
-		return encryption.isRaw();
+		if (encryption.isRaw()) {
+			releasePlaintextBuffer();
+			return true;
+		}
+		return false;
 	}
 
 	/** Decrypts and frames what the encrypted transport owns, advancing the buffer position past the consumed bytes. */
@@ -53,6 +57,15 @@ public final class TransportFeed {
 			for (TransportFrame frame : reader.feed(plaintext)) {
 				frames.accept(frame);
 			}
+		}
+		if (encryption.isRaw()) {
+			releasePlaintextBuffer();
+		}
+	}
+
+	private void releasePlaintextBuffer() {
+		if (plaintext.capacity() > 0) {
+			plaintext = ByteBuffer.allocate(0);
 		}
 	}
 

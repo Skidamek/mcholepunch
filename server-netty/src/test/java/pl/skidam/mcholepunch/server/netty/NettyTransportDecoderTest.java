@@ -2,6 +2,7 @@ package pl.skidam.mcholepunch.server.netty;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.ByteBuffer;
@@ -46,6 +47,8 @@ class NettyTransportDecoderTest {
 		channel.writeInbound(Unpooled.wrappedBuffer(clientEncryption.encrypt(bytes(TransportFrameCodec.commit()))));
 		committed.get();
 		assertTrue(serverEncryption.isRaw());
+		assertNull(channel.pipeline().get(NettyTransportDecoder.class), "decoder should remove itself once raw");
+		assertNull(channel.pipeline().get(NettyCipherEncoder.class), "cipher encoder should be removed once raw");
 
 		clientEncryption.activateRaw();
 		channel.writeInbound(Unpooled.wrappedBuffer("raw".getBytes(StandardCharsets.UTF_8)));

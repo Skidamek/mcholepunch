@@ -1,164 +1,156 @@
 # mcholepunch
 
-mcholepunch is a Java 17 library that turns a Minecraft login handshake into an encrypted byte
-stream owned by your code. A modded client opens a connection that reads as a vanilla login, a
-modded server claims it before vanilla builds a login listener, the vanilla RSA/AES exchange runs
-with the server's own keypair, and from there the two mods talk freely. Vanilla never parses a
-packet of it, and an unmarked login replays to vanilla untouched so normal players join normally.
+A version-independent Java 17 library for running a custom byte stream over a Minecraft server's existing TCP port.
 
-The library is version independent. You supply the vanilla protocol number for the handshake, and
-every other byte mcholepunch sends or parses is the same on every Minecraft version. Nothing in
-this repository tracks Minecraft releases, and there is no Minecraft code and no mixin here.
+A client opens a connection that looks like a vanilla Minecraft login. A server-side Netty handler inspects the login before vanilla creates a login listener:
 
-```java
-// server, once at startup: what a claimed login becomes
-NettyChannelRegistry.register(maximumPendingWriteBytes, (channel, connection) -> {
-	// install your handlers on the taken-over channel; inbound application bytes arrive on it,
-	// outbound writes travel the pipeline toward the connection
-	channel.pipeline().addLast("application", new MyProtocolHandler(connection));
-	connection.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)));
-});
+- **Unmarked logins** are replayed untouched so normal players join as usual.
+- **Marked logins** are claimed, complete a vanilla-shaped RSA/AES-CFB8 key exchange using the server's own keypair, and hand off an encrypted byte stream (with an optional zero-copy upgrade to a raw stream) to your application.
 
-// server, in the Netty pipeline of every accepted Minecraft channel, before vanilla can own the login:
-NettyLoginClaimHandler.install(channel.pipeline(), serverKeyPair);
-
-// client; the protocol version is the vanilla protocol number of the target server
-HolepunchConnection connection = HolepunchClient.connect(
-		HolepunchClient.resolve("mc.example.com", 25565).toCompletableFuture().get(),
-		763,
-		handler,
-		HolepunchOptions.builder().handshakeHostSuffix(HolepunchOptions.FORGE_FML3_HANDSHAKE_HOST_SUFFIX).build()
-).toCompletableFuture().get(20, TimeUnit.SECONDS);
-```
-
-AutoModpack uses this to run its modpack protocol through the one port a modded server is
-guaranteed to have open. It layers its own TLS on top with the transport handoff described below.
-
-When the caller already knows the transport address, build the route with
-`HolepunchRoute.at(handshakeHost, handshakePort, transportAddress)` instead of calling `resolve`.
-The handshake still presents the logical host and port; only the socket changes.
-
-## How it works
-
-1. The client resolves the address the way Minecraft does (SRV records, IPv6 literals) and opens a
-   TCP connection to it.
-2. It sends a Handshake (packet 0, login intention) carrying the protocol number you supplied, then
-   a Login Start (packet 0). On every version the Login Start is `name + UUID`, the newest shape,
-   because the marker hides in the UUID and no vanilla decoder ever sees the packet.
-3. `NettyLoginClaimHandler` holds the handshake frame, reads the Login Start, and checks the UUID.
-   No marker: it replays the original bytes downstream and removes itself, and the login proceeds
-   exactly as vanilla would have run it. Marker: it starts the login negotiator, which strips the
-   vanilla pipeline wholesale and replaces it with mcholepunch's own vanilla-shaped framing,
-   before vanilla builds a login listener.
-4. The server sends an Encryption Request (packet 1, `shouldAuthenticate` always false). The
-   client answers with a fresh AES secret sealed to the server's RSA public key, and both sides
-   switch to AES/CFB8.
-5. The server sends an encrypted Custom Query (packet 4), `mcholepunch:takeover`, and once that
-   write lands it swaps the negotiation framing for its transport and hands the channel to the
-   registered `HolepunchChannelApplication`. The client switches when it receives the query; from
-   that point the client delivers `ByteBuffer`s to its `HolepunchHandler` and the server owns the
-   taken-over Netty channel.
-
-### The marker
-
-A marker UUID is built by `HolepunchMarker`: 122 payload bits packed into an RFC 4122 v4-shaped
-UUID. The payload is an 80-bit constant (SHA-256 of `mcholepunch:marker-hash`, truncated, by
-default), a version byte, a flags byte, and a 26-bit random nonce. The first 96 bits are XOR-masked
-with SHA-256 of `mcholepunch:uuid-mask` keyed by the nonce, so the constant does not appear in the
-clear. Decoding reverses the mask with the received nonce and compares the constant. A random
-UUID passes with probability 2^-96; a real account UUID never does.
-
-A deployment can replace the 80-bit constant: supply the same 10 bytes on both ends —
-`HolepunchOptions.Builder.markerConstant` on the client and the matching
-`NettyLoginClaimHandler.install` overload on the server — and only that deployment's clients are
-claimed by its servers; a stock client and a customized server replay each other's logins to
-vanilla. The constant is a routing key, not a secret: it never authenticates anything, and the
-marker UUID itself is always built by the library, because the claim step must be able to decode
-it.
-
-### The transport handoff
-
-The handoff is optional. A connection that never calls `commitTransportUpgrade()` keeps the
-vanilla AES/CFB8 transport for its whole life: `onRead` and `write` keep working, nothing times
-out, and the vanilla AES does all of the encryption work. It is a supported resting state, not a
-phase you must pass through.
-
-Bulk payloads belong past the flip: commit **before** large transfers and run them over the raw
-stream (or TLS on top of it). The encrypted transport is bounded by Minecraft's serial AES/CFB8
-cipher at roughly 60 MB/s per core, while the raw stream moves at memory speed; no amount of
-copy-tuning on the encrypted path changes that ceiling, so treat ~60 MB/s per core as its design
-limit and keep it for small protocol messages.
-
-An application that wants to change the wire format midstream (AutoModpack inserts TLS) must not
-race its own bytes into the old format. `commitTransportUpgrade()` exchanges an encrypted COMMIT
-control frame in each direction, and both endpoints flip to the raw stream at the same stream
-position. Bytes flushed before the local COMMIT travel the AES transport and surface in the
-peer's `onRead`; writes submitted while the commit is in flight fail, so an application holds its
-own output across the flip; writes after it travel the raw stream and surface in `onRawRead`.
-Past the flip, mcholepunch does not interpret the bytes and does not authenticate the peer; the
-stream is yours.
-
-### Talking to a server without mcholepunch
-
-The client expects the world it dials to speak the dialect above, and fails fast when it does
-not. A vanilla server in online mode sends an Encryption Request with `shouldAuthenticate=true`;
-mcholepunch never fakes Mojang authentication, so the connect future fails with
-`AUTHENTICATION_REQUESTED`. A vanilla server in offline mode sends some other dialect instead
-(Set Compression, Login Plugin Requests, Login Success), which surfaces as `UNEXPECTED_PACKET`.
-A silent or filtered peer ends in `TIMEOUT` after the negotiation timeout. In every case the
-connect future completes exceptionally and the socket closes; nothing hangs and nothing is sent
-beyond the two vanilla-shaped login packets.
+There is no Minecraft code, no mixins, and no version tracking in this repository. You pass the target server's vanilla protocol number for the handshake; everything else on the wire is identical across Minecraft versions.
 
 ## Modules
 
-| Module | Description |
-|---|---|
-| `:core` | The login codec (`LoginCodec`), the marker, the NIO client and its negotiation, the vanilla-style crypto, SRV resolution, and the transport handoff. No Netty. |
-| `:server-netty` | The Netty server side: `NettyLoginClaimHandler`, the login negotiator that owns the taken-over channel, the vanilla-shaped framing handlers, and the raw connection plumbing. Depends on Netty 4.1 and `:core`. |
+| Module | Artifact | Description |
+|---|---|---|
+| `:core` | `mcholepunch-core` | NIO client, login codec, marker UUID codec, Minecraft RSA/AES-CFB8 crypto, RFC 2782 SRV resolver, and transport handoff state machine. Zero Netty dependency. |
+| `:server-netty` | `mcholepunch-server-netty` | Netty 4.1 server integration: login claim handler, login negotiator, vanilla framing codecs, and taken-over channel transport. |
 
-Package `pl.skidam.mcholepunch` holds the public API (`HolepunchClient`, `HolepunchConnection`,
-`HolepunchHandler`, `HolepunchOptions`, `HolepunchRoute`, `HolepunchFailure`, and the `server.netty`
-integration points: `NettyChannelRegistry`, `NettyLoginClaimHandler`, `HolepunchChannelApplication`).
-These names are the stable surface. The rest of the public classes in `server.netty` are the
-takeover machinery itself, and everything under `internal`, can all change without notice.
+### Public API Surface
 
-Tuning lives in `HolepunchOptions`: username (a random one is generated when absent), the Forge
-and NeoForge `\0FML3\0` host suffix, connect and negotiation timeouts (10 s each), the executor
-that runs client callbacks (ForkJoinPool common pool by default), and the send-side frame cap
-(`maximumFrameBytes`, 256 KiB by default). The frame ceiling is the vanilla 2 MiB login cap;
-writes above the send cap are split and the peer accepts up to the ceiling. AutoModpack streams
-4 MiB contract body chunks, but TLS turns them into ~16 KiB records before they reach the
-transport, so the 256 KiB default fits it without configuration. The client imposes no
-pending-write cap: the stage returned by `write` completes only once the bytes reached the socket,
-so apply backpressure by waiting on it before queueing more. The server's pending-write budget and
-frame cap are the values passed to `NettyChannelRegistry.register` (the two-argument overload
-keeps the 256 KiB frame default); Netty applies the pending budget as a write-buffer water mark
-(`isWritable()`), not a hard cap.
+- **Core (`pl.skidam.mcholepunch`)**: `HolepunchClient`, `HolepunchConnection`, `HolepunchHandler`, `HolepunchOptions`, `HolepunchRoute`, `HolepunchFailure`
+- **Server (`pl.skidam.mcholepunch.server.netty`)**: `NettyChannelRegistry`, `NettyLoginClaimHandler`, `HolepunchChannelApplication`
 
-## What it is not
+Everything under `pl.skidam.mcholepunch.internal` and the remaining plumbing classes in `server.netty` are internal implementation details.
 
-There is no rendezvous server and no UDP punching here; the caller brings a reachable address,
-whether that is a plain host or the result of its own holepunch coordination. There is no
-gameplay takeover: a claimed login never becomes a player session. And there is no Mojang session
-validation: the encryption exchange proves possession of the server keypair's counterparty, not
-identity.
+## Quick Start
 
-## Building and debugging
+### Server (Netty)
 
-```sh
-./gradlew build          # compile, run the JUnit 5 tests, jar both modules
-./gradlew formatApply    # spotless, Eclipse formatter
+Register your application once at startup, then install `NettyLoginClaimHandler` on every accepted Minecraft channel after vanilla's `"splitter"` frame decoder:
+
+```java
+// 1. Register the handler for claimed connections (once at startup)
+NettyChannelRegistry.Registration registration = NettyChannelRegistry.register(
+		1024 * 1024, // write-buffer water mark in bytes (channel.isWritable())
+		(channel, connection) -> {
+			channel.pipeline().addLast("app", new MyProtocolHandler(connection));
+			connection.write(ByteBuffer.wrap("hello".getBytes(StandardCharsets.UTF_8)));
+		}
+);
+
+// 2. Install on each accepted Minecraft server channel before vanilla owns the login
+NettyLoginClaimHandler.install(channel.pipeline(), serverKeyPair);
 ```
 
-Both modules target Java 17. Transport tracing, on the client and the server alike, is behind
-`-Dmcholepunch.debug=true` (frame previews sized by `-Dmcholepunch.debug.previewBytes`, 16 by
-default). Without that flag the library logs nothing on paths that return failures to their
-caller: client outcomes come back through failed futures and the closed callback, server outcomes
-after the handover through the channel and the commit future. Two things still print as a warning
-because no caller exists to receive them: a server-side IO failure before the application is
-installed, and an inbound pipeline exception an application handler did not handle. A malformed
-peer frame is the peer's doing and records under tracing only.
+### Client (NIO)
+
+Resolve a server address (including `_minecraft._tcp` SRV records and IPv6 literals) or construct a `HolepunchRoute` directly when you already have the socket address:
+
+```java
+HolepunchRoute route = HolepunchClient.resolve("mc.example.com", 25565)
+		.toCompletableFuture()
+		.get();
+
+// Or skip DNS when the transport address is already known:
+// HolepunchRoute route = HolepunchRoute.at("mc.example.com", 25565, socketAddress);
+
+HolepunchOptions options = HolepunchOptions.builder()
+		.handshakeHostSuffix(HolepunchOptions.FORGE_FML3_HANDSHAKE_HOST_SUFFIX)
+		.build();
+
+HolepunchConnection connection = HolepunchClient.connect(route, 763, handler, options)
+		.toCompletableFuture()
+		.get(20, TimeUnit.SECONDS);
+```
+
+## Protocol Flow
+
+1. **Connect**: The client resolves the target (applying RFC 2782 SRV priority and weight selection on port `25565`) and opens a TCP socket.
+2. **Handshake + Login Start**: The client sends a vanilla Handshake (`packet 0`, login intention `2`) with the caller-supplied protocol version, followed by a Login Start (`packet 0`) containing a username and a generated marker UUID.
+3. **Claim or Replay**: `NettyLoginClaimHandler` holds the Handshake frame (bounded by a 10s expiry timer) until Login Start arrives. If the UUID does not match or no application is registered, both frames are replayed downstream and the handler removes itself. If it matches, `NettyLoginNegotiator` strips the vanilla pipeline and takes over the channel.
+4. **Encryption Exchange**: The server sends an Encryption Request (`packet 1`, `shouldAuthenticate = false`) with its RSA public key and a 4-byte challenge. The client generates a 16-byte AES secret, encrypts both secret and challenge with the server's RSA public key, replies with Encryption Response (`packet 1`), and both sides enable `AES/CFB8/NoPadding`.
+5. **Takeover**: The server sends an encrypted Custom Query (`packet 4`, `mcholepunch:takeover`), swaps to the framed transport pipeline, and invokes `HolepunchChannelApplication.install(...)`. The client switches upon receiving the query and invokes `HolepunchHandler.onOpen(...)`.
+
+## Marker UUIDs and Custom Routing
+
+`HolepunchMarker` encodes 122 payload bits into an RFC 4122 v4-shaped UUID:
+
+- 80-bit constant (default: first 10 bytes of `SHA-256("mcholepunch:marker-hash")`)
+- 8-bit protocol version (`1`)
+- 8-bit flags (`0`)
+- 26-bit random nonce
+
+The first 96 bits are XOR-masked with `SHA-256("mcholepunch:uuid-mask" || nonce)` so the constant never appears in plaintext on the wire. A random UUID has a `2^-96` chance of matching.
+
+To isolate your deployment from other `mcholepunch` users, pass the same 10-byte constant on both ends:
+
+- Client: `HolepunchOptions.builder().markerConstant(tenBytes)`
+- Server: `NettyLoginClaimHandler.install(pipeline, serverKeyPair, tenBytes)`
+
+The marker constant is a routing key, not a secret.
+
+## Encrypted Transport vs. Raw Handoff
+
+By default, connections run over a length-prefixed framed stream encrypted with Minecraft's vanilla `AES/CFB8`. This is a valid resting state for the full lifetime of a connection and works well for control traffic and small messages.
+
+For bulk transfers, upgrade to the raw stream with `commitTransportUpgrade()` before sending large payloads:
+
+- Vanilla `AES/CFB8` is serial and caps around ~60 MB/s per core, whereas the raw path passes buffers through without framing or cipher overhead.
+- `commitTransportUpgrade()` exchanges an encrypted `COMMIT` control frame in both directions and flips both endpoints at the exact same stream position.
+- Writes submitted while a commit is in flight fail immediately so application code does not race across the boundary.
+- On the client, pre-handoff bytes arrive in `HolepunchHandler.onRead(ByteBuffer)` and post-handoff bytes arrive in `HolepunchHandler.onRawRead(ByteBuffer)` (which defaults to `onRead`).
+- Both endpoints expose the shared 16-byte AES key via `connection.transportSecret()` if your layered protocol (such as TLS) wants to bind to it. Once raw mode is active, `mcholepunch` does not inspect or encrypt the stream.
+
+## Tuning and Backpressure
+
+| Setting | Default | Notes |
+|---|---|---|
+| `connectTimeout` | `10s` | TCP connect timeout on `HolepunchOptions`. |
+| `negotiationTimeout` | `10s` | Total budget for encryption + takeover reads. |
+| `callbackExecutor` | `ForkJoinPool.commonPool()` | Executor for client `HolepunchHandler` callbacks (serialized per connection). |
+| `maximumFrameBytes` | `256 KiB` (`HolepunchOptions.DEFAULT_MAXIMUM_FRAME_BYTES`) | Send-side split threshold on client options or 3-arg `NettyChannelRegistry.register`. Receivers always accept up to `HolepunchOptions.MAX_FRAME_BYTES` (2 MiB). |
+| `maximumPendingWriteBytes` | Caller-supplied (server) | Applied as Netty's `WriteBufferWaterMark` (`channel.isWritable()`), not a hard cap. |
+
+On the client, `connection.write(ByteBuffer)` completes only once the bytes have been written to the socket; wait on the returned `CompletionStage` to apply backpressure, and use `pauseReads()` / `resumeReads()` for inbound flow control.
+
+## Failure Modes
+
+Client failures surface as `HolepunchFailure` (a subclass of `IOException`) with a typed `HolepunchFailure.Kind`:
+
+- `AUTHENTICATION_REQUESTED`: Peer sent an Encryption Request with `shouldAuthenticate = true` (e.g., an online-mode vanilla server without `mcholepunch`).
+- `UNEXPECTED_PACKET`: Peer sent an unrecognized packet during negotiation or takeover (e.g., an offline-mode vanilla server).
+- `TIMEOUT`: Negotiation or takeover exceeded `negotiationTimeout`.
+- `CLOSED`: Connection closed locally or by the peer.
+- `IO`: Socket, cipher, or callback error.
+
+## Logging and Tracing
+
+Without debug flags, the library logs nothing on paths where errors are returned to callers. Only unreturnable server-side errors (an IO failure before application install, or an uncaught inbound pipeline exception) emit a single Log4j warning under the `"mcholepunch"` logger.
+
+Enable verbose transport tracing with JVM system properties:
+
+```sh
+-Dmcholepunch.debug=true
+-Dmcholepunch.debug.previewBytes=16      # optional, hex preview length (default 16)
+-Dmcholepunch.debug.watchdogSeconds=5    # optional, periodic state dump interval (default 5)
+```
+
+## Non-Goals
+
+- **No NAT traversal or rendezvous**: Callers provide a reachable address.
+- **No gameplay takeover**: Claimed logins never become Minecraft player sessions.
+- **No Mojang authentication**: The RSA/AES exchange binds to the server's keypair only.
+
+## Building
+
+Requires Java 17:
+
+```sh
+./gradlew build          # compile (-Xlint:all,-serial -Werror), test, spotlessCheck, jar
+./gradlew formatApply    # apply Eclipse Java and ktlint Gradle formatting
+```
 
 ## License
 
-BSD 3-Clause, see `LICENSE`.
+BSD 3-Clause. See [LICENSE](LICENSE).

@@ -27,6 +27,7 @@ import io.netty.util.concurrent.PromiseCombiner;
 
 import pl.skidam.mcholepunch.HolepunchConnection;
 import pl.skidam.mcholepunch.HolepunchFailure;
+import pl.skidam.mcholepunch.HolepunchOptions;
 import pl.skidam.mcholepunch.internal.DebugLog;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 import pl.skidam.mcholepunch.internal.protocol.TransportFrameCodec;
@@ -56,14 +57,17 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 	private final ScheduledFuture<?> watchdog;
 	private volatile ChannelHandlerContext framerContext;
 
-	/** Creates a connection with the default send-side frame cap ({@link TransportFrame#DEFAULT_MAX_FRAME_BYTES}). */
+	/** Creates a connection with the default send-side frame cap ({@link HolepunchOptions#DEFAULT_MAXIMUM_FRAME_BYTES}). */
 	public NettyHolepunchConnection(Channel channel, NettyEncryption encryption, long maximumPendingWriteBytes) {
-		this(channel, encryption, maximumPendingWriteBytes, TransportFrame.DEFAULT_MAX_FRAME_BYTES);
+		this(channel, encryption, maximumPendingWriteBytes, HolepunchOptions.DEFAULT_MAXIMUM_FRAME_BYTES);
 	}
 
 	public NettyHolepunchConnection(Channel channel, NettyEncryption encryption, long maximumPendingWriteBytes, int maximumFrameBytes) {
 		this.channel = Objects.requireNonNull(channel, "channel");
 		this.encryption = Objects.requireNonNull(encryption, "encryption");
+		if (maximumPendingWriteBytes <= 0) {
+			throw new IllegalArgumentException("maximumPendingWriteBytes must be positive");
+		}
 		if (maximumFrameBytes < 1 || maximumFrameBytes > TransportFrame.MAX_FRAME_BYTES) {
 			throw new IllegalArgumentException("maximumFrameBytes must be between 1 and " + TransportFrame.MAX_FRAME_BYTES);
 		}
@@ -161,6 +165,11 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 		if (data == null) {
 			return CompletableFuture.failedFuture(new NullPointerException("data"));
 		}
+		ByteBuffer copy = data.duplicate();
+		int size = copy.remaining();
+		if (size == 0) {
+			return CompletableFuture.completedFuture(null);
+		}
 		if (closed.get()) {
 			return CompletableFuture.failedFuture(new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "connection closed", null));
 		}
@@ -170,7 +179,7 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 		CompletableFuture<Void> result = new CompletableFuture<>();
 		// The framer owns the era checks and the framing; writing through the channel keeps one
 		// copy of those rules for pipeline writes and this API alike.
-		channel.writeAndFlush(Unpooled.wrappedBuffer(data.duplicate())).addListener((ChannelFutureListener) completed -> {
+		channel.writeAndFlush(Unpooled.wrappedBuffer(copy)).addListener((ChannelFutureListener) completed -> {
 			if (!completed.isSuccess()) {
 				Throwable cause = completed.cause();
 				if (cause instanceof HolepunchFailure failure) {
@@ -186,7 +195,7 @@ public final class NettyHolepunchConnection extends ChannelOutboundHandlerAdapte
 				return;
 			}
 			if (DebugLog.enabled()) {
-				DebugLog.log("SERVER", debugId, "write complete plaintext=%d totalSent=%d writable=%s", data.remaining(), sentBytes.addAndGet(data.remaining()), channel.isWritable());
+				DebugLog.log("SERVER", debugId, "write complete plaintext=%d totalSent=%d writable=%s", size, sentBytes.addAndGet(size), channel.isWritable());
 			}
 			result.complete(null);
 		});

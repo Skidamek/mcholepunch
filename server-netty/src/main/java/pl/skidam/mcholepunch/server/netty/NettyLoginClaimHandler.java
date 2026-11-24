@@ -1,6 +1,7 @@
 package pl.skidam.mcholepunch.server.netty;
 
 import java.security.KeyPair;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
@@ -50,7 +51,7 @@ public final class NettyLoginClaimHandler extends ChannelInboundHandlerAdapter {
 	}
 
 	public NettyLoginClaimHandler(KeyPair keyPair, byte[] markerConstant) {
-		this.keyPair = keyPair;
+		this.keyPair = Objects.requireNonNull(keyPair, "keyPair");
 		this.markerConstant = HolepunchMarker.requireMarkerConstant(markerConstant);
 	}
 

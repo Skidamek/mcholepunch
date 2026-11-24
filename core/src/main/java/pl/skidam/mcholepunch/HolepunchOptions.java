@@ -13,6 +13,10 @@ import pl.skidam.mcholepunch.internal.protocol.TransportFrame;
 public final class HolepunchOptions {
 	public static final Duration DEFAULT_CONNECT_TIMEOUT = Duration.ofSeconds(10);
 	public static final Duration DEFAULT_NEGOTIATION_TIMEOUT = Duration.ofSeconds(10);
+	/** Default send-side transport frame cap (256 KiB). */
+	public static final int DEFAULT_MAXIMUM_FRAME_BYTES = TransportFrame.DEFAULT_MAX_FRAME_BYTES;
+	/** Protocol ceiling for a single transport frame (2 MiB, matching the vanilla login frame cap). */
+	public static final int MAX_FRAME_BYTES = TransportFrame.MAX_FRAME_BYTES;
 	/**
 	 * Forge 1.17+ / NeoForge ClientIntention hostname extra. `ConnectionType.forVersionFlag` treats
 	 * a host that contains this as MODDED with FML protocol 3. It lives here because appending it
@@ -74,9 +78,9 @@ public final class HolepunchOptions {
 
 	/**
 	 * Send-side transport frame cap. A write above this is split into frames the peer will accept.
-	 * The default is {@link TransportFrame#DEFAULT_MAX_FRAME_BYTES}; the protocol ceiling is
-	 * {@link TransportFrame#MAX_FRAME_BYTES} (the vanilla login frame cap). The peer's reader
-	 * accepts up to the ceiling, so this is a local memory/latency choice, not a wire change.
+	 * The default is {@link #DEFAULT_MAXIMUM_FRAME_BYTES}; the protocol ceiling is
+	 * {@link #MAX_FRAME_BYTES} (the vanilla login frame cap). The peer's reader accepts up to the
+	 * ceiling, so this is a local memory/latency choice, not a wire change.
 	 */
 	public int maximumFrameBytes() {
 		return maximumFrameBytes;
@@ -89,7 +93,7 @@ public final class HolepunchOptions {
 		private Duration negotiationTimeout = DEFAULT_NEGOTIATION_TIMEOUT;
 		private Executor callbackExecutor = ForkJoinPool.commonPool();
 		private byte[] markerConstant;
-		private int maximumFrameBytes = TransportFrame.DEFAULT_MAX_FRAME_BYTES;
+		private int maximumFrameBytes = DEFAULT_MAXIMUM_FRAME_BYTES;
 
 		public Builder username(String username) {
 			this.username = Objects.requireNonNull(username, "username");
@@ -128,12 +132,12 @@ public final class HolepunchOptions {
 
 		/**
 		 * Sets the send-side transport frame cap. Values above zero and at most
-		 * {@link TransportFrame#MAX_FRAME_BYTES} are accepted; writes above the cap are split, so the
-		 * stream is unchanged. Lower values bound the per-frame buffer; the default is 256 KiB.
+		 * {@link HolepunchOptions#MAX_FRAME_BYTES} are accepted; writes above the cap are split, so
+		 * the stream is unchanged. Lower values bound the per-frame buffer; the default is 256 KiB.
 		 */
 		public Builder maximumFrameBytes(int maximumFrameBytes) {
-			if (maximumFrameBytes < 1 || maximumFrameBytes > TransportFrame.MAX_FRAME_BYTES) {
-				throw new IllegalArgumentException("maximumFrameBytes must be between 1 and " + TransportFrame.MAX_FRAME_BYTES);
+			if (maximumFrameBytes < 1 || maximumFrameBytes > MAX_FRAME_BYTES) {
+				throw new IllegalArgumentException("maximumFrameBytes must be between 1 and " + MAX_FRAME_BYTES);
 			}
 			this.maximumFrameBytes = maximumFrameBytes;
 			return this;

@@ -1,6 +1,7 @@
 package pl.skidam.mcholepunch;
 
 import java.io.IOException;
+import java.util.Objects;
 
 public final class HolepunchFailure extends IOException {
 	public enum Kind {
@@ -11,12 +12,12 @@ public final class HolepunchFailure extends IOException {
 
 	public HolepunchFailure(Kind kind, String message) {
 		super(message);
-		this.kind = kind;
+		this.kind = Objects.requireNonNull(kind, "kind");
 	}
 
 	public HolepunchFailure(Kind kind, String message, Throwable cause) {
 		super(message, cause);
-		this.kind = kind;
+		this.kind = Objects.requireNonNull(kind, "kind");
 	}
 
 	public Kind kind() {

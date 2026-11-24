@@ -71,7 +71,7 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	private final ScheduledFuture<?> watchdog;
 	private final ByteArrayOutputStream initialData = new ByteArrayOutputStream();
 	private byte[] initialDataSnapshot = new byte[0];
-	private ByteBuffer encryptedOutput = ByteBuffer.allocateDirect(8192);
+	private ByteBuffer encryptedOutput;
 	private final TransportHandoff handoff = new TransportHandoff();
 	private final AtomicReference<CompletableFuture<Void>> commitResult = new AtomicReference<>();
 	/**
@@ -101,13 +101,25 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	static NioHolepunchConnection negotiate(long debugId, SocketChannel channel, HolepunchRequest request, HolepunchRoute address) throws Exception {
 		ClientNegotiation.Result result = ClientNegotiation.negotiate(debugId, channel, request, address);
 		NioHolepunchConnection connection = new NioHolepunchConnection(debugId, channel, request, result);
-		DebugLog.log("CLIENT", debugId, "waiting for takeover query");
-		connection.awaitTakeover(result.deadline());
-		DebugLog.log("CLIENT", debugId, "takeover complete; switching to coordinated transport initialBytes=%d", connection.initialDataSnapshot.length);
-		connection.dispatchOpen();
-		connection.dispatchInitialData();
-		connection.readerExecutor.execute(connection::readLoop);
-		return connection;
+		try {
+			DebugLog.log("CLIENT", debugId, "waiting for takeover query");
+			connection.awaitTakeover(result.deadline());
+			DebugLog.log("CLIENT", debugId, "takeover complete; switching to coordinated transport initialBytes=%d", connection.initialDataSnapshot.length);
+			connection.dispatchOpen();
+			connection.dispatchInitialData();
+			connection.readerExecutor.execute(connection::readLoop);
+			return connection;
+		} catch (Throwable throwable) {
+			connection.abortNegotiation();
+			throw throwable;
+		}
+	}
+
+	private void abortNegotiation() {
+		closed.set(true);
+		DebugLog.cancel(watchdog);
+		writerExecutor.shutdownNow();
+		readerExecutor.shutdownNow();
 	}
 
 	private void awaitTakeover(long deadline) throws Exception {
@@ -210,6 +222,9 @@ final class NioHolepunchConnection implements HolepunchConnection {
 				return;
 			}
 			if (handoff.isRaw()) {
+				// Release the direct cipher output buffer once we enter the raw era; it is never
+				// needed again because raw never flips back.
+				encryptedOutput = null;
 				// The raw era is the bulk path: write the caller's bytes straight to the socket
 				// instead of copying every payload through the cipher output buffer.
 				writeFully(channel, data);
@@ -585,7 +600,11 @@ final class NioHolepunchConnection implements HolepunchConnection {
 		if (commit != null) {
 			commit.completeExceptionally(failure);
 		}
-		callbackExecutor.execute(() -> handler.onClosed(failure));
+		try {
+			callbackExecutor.execute(() -> handler.onClosed(failure));
+		} catch (RejectedExecutionException rejected) {
+			DebugLog.failure("CLIENT", debugId, "onClosed scheduling rejected", rejected);
+		}
 	}
 
 	private String debugState() {
@@ -604,8 +623,8 @@ final class NioHolepunchConnection implements HolepunchConnection {
 	}
 
 	private void ensureEncryptedCapacity(int requiredBytes) {
-		if (encryptedOutput.capacity() < requiredBytes) {
-			encryptedOutput = ByteBuffer.allocateDirect(requiredBytes);
+		if (encryptedOutput == null || encryptedOutput.capacity() < requiredBytes) {
+			encryptedOutput = ByteBuffer.allocateDirect(Math.max(8192, requiredBytes));
 		}
 	}
 

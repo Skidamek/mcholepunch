@@ -1,7 +1,10 @@
 package pl.skidam.mcholepunch.internal.net;
 
 import java.net.*;
+import java.util.ArrayList;
 import java.util.Hashtable;
+import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 
 import javax.naming.Context;
 import javax.naming.NamingException;
@@ -118,22 +121,14 @@ public class VanillaAddressResolver {
 			if (attribute == null || attribute.size() == 0) {
 				return null;
 			}
-			String[] fields = attribute.get(0).toString().trim().split("\\s+");
-			if (fields.length != 4) {
-				return null;
+			List<String> rawRecords = new ArrayList<>(attribute.size());
+			for (int index = 0; index < attribute.size(); index++) {
+				Object value = attribute.get(index);
+				if (value != null) {
+					rawRecords.add(value.toString());
+				}
 			}
-			int port = Integer.parseInt(fields[2]);
-			String target = fields[3];
-			if (SERVICE_UNAVAILABLE_TARGET.equals(target)) {
-				return new SrvRecord(target, port);
-			}
-			if (target.endsWith(".")) {
-				target = target.substring(0, target.length() - 1);
-			}
-			if (target.isBlank() || port < 1 || port > 65535) {
-				return null;
-			}
-			return new SrvRecord(target, port);
+			return selectSrvRecord(rawRecords);
 		} catch (NamingException | RuntimeException exception) {
 			return null;
 		} finally {
@@ -145,6 +140,83 @@ public class VanillaAddressResolver {
 			}
 		}
 	}
+
+	/** Selects one SRV target using RFC 2782 priority (lowest first) and weight ordering. */
+	static SrvRecord selectSrvRecord(List<String> rawRecords) {
+		int bestPriority = Integer.MAX_VALUE;
+		List<WeightedSrv> candidates = new ArrayList<>();
+		for (String raw : rawRecords) {
+			WeightedSrv parsed = parseSrvRecord(raw);
+			if (parsed == null) {
+				continue;
+			}
+			if (parsed.priority() < bestPriority) {
+				bestPriority = parsed.priority();
+				candidates.clear();
+				candidates.add(parsed);
+			} else if (parsed.priority() == bestPriority) {
+				candidates.add(parsed);
+			}
+		}
+		if (candidates.isEmpty()) {
+			return null;
+		}
+		if (candidates.size() == 1) {
+			return candidates.get(0).record();
+		}
+		long totalWeight = 0;
+		for (WeightedSrv candidate : candidates) {
+			totalWeight += candidate.weight();
+		}
+		if (totalWeight <= 0) {
+			return candidates.get(ThreadLocalRandom.current().nextInt(candidates.size())).record();
+		}
+		long pick = ThreadLocalRandom.current().nextLong(totalWeight);
+		long running = 0;
+		for (WeightedSrv candidate : candidates) {
+			if (candidate.weight() == 0) {
+				continue;
+			}
+			running += candidate.weight();
+			if (pick < running) {
+				return candidate.record();
+			}
+		}
+		return candidates.get(candidates.size() - 1).record();
+	}
+
+	private static WeightedSrv parseSrvRecord(String raw) {
+		if (raw == null) {
+			return null;
+		}
+		String[] fields = raw.trim().split("\\s+");
+		if (fields.length != 4) {
+			return null;
+		}
+		try {
+			int priority = Integer.parseInt(fields[0]);
+			int weight = Integer.parseInt(fields[1]);
+			int port = Integer.parseInt(fields[2]);
+			String target = fields[3];
+			if (priority < 0 || weight < 0) {
+				return null;
+			}
+			if (SERVICE_UNAVAILABLE_TARGET.equals(target)) {
+				return new WeightedSrv(priority, weight, new SrvRecord(target, port));
+			}
+			if (target.endsWith(".")) {
+				target = target.substring(0, target.length() - 1);
+			}
+			if (target.isBlank() || port < 1 || port > 65535) {
+				return null;
+			}
+			return new WeightedSrv(priority, weight, new SrvRecord(target, port));
+		} catch (NumberFormatException exception) {
+			return null;
+		}
+	}
+
+	private record WeightedSrv(int priority, int weight, SrvRecord record) {}
 
 	public record SrvRecord(String host, int port) {}
 }

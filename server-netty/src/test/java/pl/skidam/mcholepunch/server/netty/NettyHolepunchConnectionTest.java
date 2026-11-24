@@ -128,4 +128,18 @@ class NettyHolepunchConnectionTest {
 		assertEquals(4096, channel.config().getWriteBufferWaterMark().high());
 		channel.finishAndReleaseAll();
 	}
+
+	@Test
+	void validatesConstructorArgumentsAndTreatsEmptyWriteAsNoOp() throws Exception {
+		EmbeddedChannel channel = new EmbeddedChannel();
+		NettyEncryption encryption = new NettyEncryption(MinecraftCrypt.newSecret());
+		assertThrows(IllegalArgumentException.class, () -> new NettyHolepunchConnection(channel, encryption, 0));
+		assertThrows(NullPointerException.class, () -> new NettyLoginClaimHandler(null));
+
+		NettyHolepunchConnection connection = new NettyHolepunchConnection(channel, encryption, 1024);
+		channel.pipeline().addLast(NettyHolepunchConnection.HANDLER_NAME, connection);
+		connection.write(ByteBuffer.allocate(0)).toCompletableFuture().get(1, TimeUnit.SECONDS);
+		assertNull(channel.readOutbound());
+		channel.finishAndReleaseAll();
+	}
 }

@@ -25,9 +25,17 @@ class HolepunchOptionsTest {
 
 	@Test
 	void frameCapDefaultsToTheSafeSendSizeAndStaysUnderTheProtocolCeiling() {
-		assertEquals(TransportFrame.DEFAULT_MAX_FRAME_BYTES, HolepunchOptions.builder().build().maximumFrameBytes());
+		assertEquals(HolepunchOptions.DEFAULT_MAXIMUM_FRAME_BYTES, HolepunchOptions.builder().build().maximumFrameBytes());
+		assertEquals(TransportFrame.DEFAULT_MAX_FRAME_BYTES, HolepunchOptions.DEFAULT_MAXIMUM_FRAME_BYTES);
+		assertEquals(TransportFrame.MAX_FRAME_BYTES, HolepunchOptions.MAX_FRAME_BYTES);
 		assertEquals(64 * 1024, HolepunchOptions.builder().maximumFrameBytes(64 * 1024).build().maximumFrameBytes());
 		assertThrows(IllegalArgumentException.class, () -> HolepunchOptions.builder().maximumFrameBytes(0));
-		assertThrows(IllegalArgumentException.class, () -> HolepunchOptions.builder().maximumFrameBytes(TransportFrame.MAX_FRAME_BYTES + 1));
+		assertThrows(IllegalArgumentException.class, () -> HolepunchOptions.builder().maximumFrameBytes(HolepunchOptions.MAX_FRAME_BYTES + 1));
+	}
+
+	@Test
+	void failureRequiresNonNullKind() {
+		assertThrows(NullPointerException.class, () -> new HolepunchFailure(null, "missing kind"));
+		assertThrows(NullPointerException.class, () -> new HolepunchFailure(null, "missing kind", new RuntimeException()));
 	}
 }

@@ -35,7 +35,6 @@ final class ClientNegotiation {
 		NioHolepunchConnection.writeFully(channel, loginStart);
 
 		MinecraftFrameReader reader = new MinecraftFrameReader(LoginCodec.MAX_FRAME_BYTES);
-		CipherStreamState decryptor = null;
 		ByteBuffer network = ByteBuffer.allocate(8192);
 		long deadline = System.nanoTime() + options.negotiationTimeout().toNanos();
 		while (true) {
@@ -47,34 +46,29 @@ final class ClientNegotiation {
 				throw new HolepunchFailure(HolepunchFailure.Kind.CLOSED, "server closed during negotiation", null);
 			}
 			network.flip();
-			DebugLog.log("CLIENT", debugId, "negotiation TCP read bytes=%d encrypted=%s", count, decryptor != null);
-			if (decryptor != null) {
-				network = ByteBuffer.wrap(decryptor.update(NioHolepunchConnection.readRemaining(network)));
-			}
+			DebugLog.log("CLIENT", debugId, "negotiation TCP read bytes=%d", count);
 			for (ByteBuffer frame : reader.feed(network, 1)) {
-				if (decryptor == null) {
-					LoginCodec.EncryptionRequest encryption;
-					try {
-						encryption = LoginCodec.readEncryptionRequest(frame);
-					} catch (IOException exception) {
-						throw new HolepunchFailure(HolepunchFailure.Kind.UNEXPECTED_PACKET, "unexpected packet during encryption negotiation", exception);
-					}
-					DebugLog.log("CLIENT", debugId, "received encryption request publicKey=%d verifyToken=%d shouldAuthenticate=%s", encryption.publicKey().length, encryption.verifyToken().length,
-							encryption.shouldAuthenticate());
-					if (encryption.shouldAuthenticate()) {
-						throw new HolepunchFailure(HolepunchFailure.Kind.AUTHENTICATION_REQUESTED, "server requested Mojang authentication", null);
-					}
-					PublicKey key = MinecraftCrypt.decodePublicKey(encryption.publicKey());
-					byte[] secret = MinecraftCrypt.newSecret();
-					byte[] encryptedSecret = MinecraftCrypt.rsaEncrypt(key, secret);
-					byte[] encryptedToken = MinecraftCrypt.rsaEncrypt(key, encryption.verifyToken());
-					ByteBuffer response = LoginCodec.encryptionResponse(encryptedSecret, encryptedToken);
-					DebugLog.log("CLIENT", debugId, "send encryption response %s", DebugLog.preview(response));
-					NioHolepunchConnection.writeFully(channel, response);
-					decryptor = MinecraftCrypt.decryptor(secret);
-					DebugLog.log("CLIENT", debugId, "encryption negotiation complete");
-					return new Result(secret, decryptor, reader, deadline);
+				LoginCodec.EncryptionRequest encryption;
+				try {
+					encryption = LoginCodec.readEncryptionRequest(frame);
+				} catch (IOException exception) {
+					throw new HolepunchFailure(HolepunchFailure.Kind.UNEXPECTED_PACKET, "unexpected packet during encryption negotiation", exception);
 				}
+				DebugLog.log("CLIENT", debugId, "received encryption request publicKey=%d verifyToken=%d shouldAuthenticate=%s", encryption.publicKey().length, encryption.verifyToken().length,
+						encryption.shouldAuthenticate());
+				if (encryption.shouldAuthenticate()) {
+					throw new HolepunchFailure(HolepunchFailure.Kind.AUTHENTICATION_REQUESTED, "server requested Mojang authentication", null);
+				}
+				PublicKey key = MinecraftCrypt.decodePublicKey(encryption.publicKey());
+				byte[] secret = MinecraftCrypt.newSecret();
+				byte[] encryptedSecret = MinecraftCrypt.rsaEncrypt(key, secret);
+				byte[] encryptedToken = MinecraftCrypt.rsaEncrypt(key, encryption.verifyToken());
+				ByteBuffer response = LoginCodec.encryptionResponse(encryptedSecret, encryptedToken);
+				DebugLog.log("CLIENT", debugId, "send encryption response %s", DebugLog.preview(response));
+				NioHolepunchConnection.writeFully(channel, response);
+				CipherStreamState decryptor = MinecraftCrypt.decryptor(secret);
+				DebugLog.log("CLIENT", debugId, "encryption negotiation complete");
+				return new Result(secret, decryptor, reader, deadline);
 			}
 		}
 	}

@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.net.Inet6Address;
 import java.net.UnknownHostException;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.junit.jupiter.api.Test;
@@ -80,5 +81,21 @@ class VanillaAddressResolverTest {
 		assertEquals(25565, resolved.handshakePort());
 		assertEquals(25566, resolved.transportAddress().getPort());
 		assertEquals("127.0.0.1", resolved.transportAddress().getAddress().getHostAddress());
+	}
+
+	@Test
+	void selectsLowestPrioritySrvRecordAndSkipsMalformedEntries() {
+		VanillaAddressResolver.SrvRecord selected = VanillaAddressResolver
+				.selectSrvRecord(List.of("bad record", "20 10 25566 backup.example.", "10 0 25565 primary.example.", "10 -1 25567 invalid-weight.example."));
+
+		assertEquals(new VanillaAddressResolver.SrvRecord("primary.example", 25565), selected);
+	}
+
+	@Test
+	void prefersNonZeroWeightAmongEqualPrioritySrvRecords() {
+		for (int attempt = 0; attempt < 16; attempt++) {
+			VanillaAddressResolver.SrvRecord selected = VanillaAddressResolver.selectSrvRecord(List.of("10 0 25565 zero-weight.example.", "10 50 25566 weighted.example."));
+			assertEquals(new VanillaAddressResolver.SrvRecord("weighted.example", 25566), selected);
+		}
 	}
 }

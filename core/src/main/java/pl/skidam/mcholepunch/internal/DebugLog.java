@@ -13,8 +13,6 @@ import java.util.function.Supplier;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import pl.skidam.mcholepunch.HolepunchFailure;
-
 /**
  * Opt-in transport tracing used to diagnose holepunch connections. Tracing is enabled with the
  * {@code mcholepunch.debug} system property and logs at info under the "mcholepunch" log4j

@@ -15,12 +15,10 @@ import pl.skidam.mcholepunch.internal.protocol.TransportFrameReader;
 import pl.skidam.mcholepunch.internal.transport.TransportFeed;
 
 public final class NettyTransportDecoder extends ByteToMessageDecoder {
-	private final NettyEncryption encryption;
 	private final NettyHolepunchConnection connection;
 	private final TransportFeed feed;
 
 	public NettyTransportDecoder(NettyEncryption encryption, NettyHolepunchConnection connection, int maximumFrameLength) {
-		this.encryption = encryption;
 		this.connection = connection;
 		this.feed = new TransportFeed(encryption.transport(), new TransportFrameReader(maximumFrameLength));
 	}

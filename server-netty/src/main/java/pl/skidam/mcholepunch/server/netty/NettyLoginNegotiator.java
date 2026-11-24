@@ -6,7 +6,6 @@ import java.security.GeneralSecurityException;
 import java.security.KeyPair;
 import java.time.Duration;
 import java.util.Objects;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 
